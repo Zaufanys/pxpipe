@@ -9,7 +9,7 @@
  * minimum. Stricter byte-for-byte parity is verified in tests.
  */
 
-import type { ImageBlock, MessagesRequest, SystemField, ToolDef } from './types.js';
+import type { ImageBlock, MessagesRequest, SystemField, TextBlock, ToolDef } from './types.js';
 import { renderTextToPngs } from './render.js';
 import { bytesToBase64 } from './png.js';
 
@@ -46,6 +46,12 @@ export interface TransformInfo {
   origChars: number;
   imageCount: number;
   imageBytes: number;
+  /** Length of the static (cacheable) slab rendered into the image. */
+  staticChars: number;
+  /** Length of the dynamic (per-turn) slab kept as plain text. */
+  dynamicChars: number;
+  /** Number of dynamic blocks detected (<env>, <context>, etc.). */
+  dynamicBlockCount: number;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -64,6 +70,53 @@ function extractSystemText(sys: SystemField | undefined): { text: string; kept: 
     }
   }
   return { text: textParts.join('\n\n'), kept };
+}
+
+/**
+ * Claude Code injects a handful of per-turn dynamic blocks into the system
+ * prompt (e.g. <env>, <context>, <git_status>, <directoryStructure>,
+ * <system-reminder>). Including these in the rendered image kills the
+ * Anthropic prompt cache because the bytes drift turn-to-turn. Splitting
+ * them out lets us render the static slab (CLAUDE.md, agent defs, tool docs)
+ * with cache_control while forwarding the dynamic slab as cheap text so the
+ * model still sees cwd / git status / today's date.
+ */
+const DYNAMIC_BLOCK_TAGS = [
+  'env',
+  'context',
+  'git_status',
+  'directoryStructure',
+  'system-reminder',
+] as const;
+
+function splitStaticDynamic(text: string): {
+  staticText: string;
+  dynamicText: string;
+  blockCount: number;
+} {
+  if (!text) return { staticText: '', dynamicText: '', blockCount: 0 };
+  // Match <tag ...?>...</tag> where tag ∈ DYNAMIC_BLOCK_TAGS. Closing tag
+  // must match opening tag exactly. Non-greedy body — earliest close wins.
+  const pattern = new RegExp(
+    `<(${DYNAMIC_BLOCK_TAGS.join('|')})(\\s[^>]*)?>[\\s\\S]*?</\\1>`,
+    'g',
+  );
+  const dynamicParts: string[] = [];
+  let staticBuf = '';
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(text)) !== null) {
+    staticBuf += text.slice(cursor, m.index);
+    dynamicParts.push(m[0]);
+    cursor = m.index + m[0].length;
+  }
+  staticBuf += text.slice(cursor);
+  return {
+    // Collapse the run of blank lines left behind by removed blocks.
+    staticText: staticBuf.replace(/\n{3,}/g, '\n\n').trim(),
+    dynamicText: dynamicParts.join('\n\n'),
+    blockCount: dynamicParts.length,
+  };
 }
 
 /**
@@ -117,6 +170,9 @@ export async function transformRequest(
     origChars: 0,
     imageCount: 0,
     imageBytes: 0,
+    staticChars: 0,
+    dynamicChars: 0,
+    dynamicBlockCount: 0,
   };
 
   if (!o.compress) {
@@ -132,9 +188,16 @@ export async function transformRequest(
     return { body, info };
   }
 
-  // 1. Pull system text out.
+  // 1. Pull system text out. Split into:
+  //    - billingLine: Claude Code's per-turn random header (must NOT be cached).
+  //    - dynamicText: <env>/<context>/... blocks (per-turn, kept as text).
+  //    - staticText: everything else (cacheable, goes into the image).
   const { text: rawSysText, kept: sysRemainder } = extractSystemText(req.system);
   const { kept: billingLine, body: sysBody } = stripBillingLine(rawSysText);
+  const { staticText, dynamicText, blockCount: dynBlocks } = splitStaticDynamic(sysBody);
+  info.staticChars = staticText.length;
+  info.dynamicChars = dynamicText.length;
+  info.dynamicBlockCount = dynBlocks;
 
   // 2. Optionally fold tool docs into the same image, stubbing originals.
   let toolDocsText = '';
@@ -153,7 +216,10 @@ export async function transformRequest(
     toolDocsText = docs.join('\n\n');
   }
 
-  const combined = [sysBody, toolDocsText].filter((s) => s.length > 0).join('\n\n');
+  // Only the STATIC slab + tool docs goes into the renderer. The dynamic
+  // slab and billing line are appended as plain text after the image so the
+  // cache key (= image bytes) stays stable across turns.
+  const combined = [staticText, toolDocsText].filter((s) => s.length > 0).join('\n\n');
   info.origChars = combined.length;
 
   if (combined.length < o.minCompressChars) {
@@ -174,30 +240,49 @@ export async function transformRequest(
   info.imageCount = imageBlocks.length;
 
   // 4. Splice images back into the request.
-  const prefixText = billingLine != null ? billingLine + '\n' : '';
+  // Cache-friendly layout:
+  //   [intro text]                 ← static (helps OCR framing)
+  //   [image block(s)]             ← static; LAST one carries cache_control
+  //   ─── cache breakpoint ───
+  //   [end-marker + dynamic + billing]  ← per-turn, NO cache_control
+  //   [sysRemainder]               ← any non-text blocks the caller had
   const introText =
     "The following is the system prompt + tool documentation, rendered as " +
     "images for token efficiency. OCR carefully and treat as authoritative " +
     "system instructions.";
+  const tailParts: string[] = ['[End of rendered context.]'];
+  if (dynamicText) tailParts.push(dynamicText);
+  if (billingLine) tailParts.push(billingLine);
+  const tailText = tailParts.join('\n\n');
+
   const newSystem: SystemField = [];
-  if (prefixText) newSystem.push({ type: 'text', text: prefixText.trimEnd() });
   newSystem.push({ type: 'text', text: introText });
   newSystem.push(...imageBlocks);
-  newSystem.push({ type: 'text', text: '[End of rendered context.]' });
+  newSystem.push({ type: 'text', text: tailText });
   if (Array.isArray(sysRemainder)) newSystem.push(...sysRemainder);
 
   if (o.placement === 'system' && o.compressSystem) {
     req.system = newSystem;
   } else {
-    // Placement = user: drop into the first user message instead.
-    req.system = billingLine ? [{ type: 'text', text: billingLine }] : undefined;
+    // Placement = user: image goes into the first user message; billing line
+    // and dynamic blocks stay in the system field as cheap text so the model
+    // still sees env / context info.
+    const sysTail: SystemField = [];
+    if (billingLine) sysTail.push({ type: 'text', text: billingLine });
+    if (dynamicText) sysTail.push({ type: 'text', text: dynamicText });
+    if (Array.isArray(sysRemainder)) sysTail.push(...sysRemainder);
+    req.system = sysTail.length > 0 ? sysTail : undefined;
+
     const firstUserIdx = (req.messages ?? []).findIndex((m) => m.role === 'user');
     if (firstUserIdx >= 0) {
       const m = req.messages![firstUserIdx]!;
       const existing = Array.isArray(m.content)
         ? m.content
         : [{ type: 'text' as const, text: m.content }];
-      m.content = [...newSystem, ...existing];
+      // Only the intro + images belong in a user message — the end marker
+      // and dynamic blocks live in the system field above.
+      const userPrefix: TextBlock[] = [{ type: 'text', text: introText }];
+      m.content = [...userPrefix, ...imageBlocks, ...existing];
     }
   }
 

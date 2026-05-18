@@ -110,4 +110,84 @@ describe('transform', () => {
     const textBlocks = out.system.filter((b: any) => b.type === 'text');
     expect(textBlocks.some((b: any) => b.text.includes('x-anthropic-billing-header'))).toBe(true);
   });
+
+  it('keeps <env> as text after the image so cache_control stays stable', async () => {
+    const staticSlab = 'claude.md ground truth.\n'.repeat(500);
+    const envBlock =
+      "<env>\nWorking directory: /tmp/parityproj\nIs directory a git repo: Yes\nPlatform: darwin\nToday's date: 2026-05-18\n</env>";
+    const sys = staticSlab + '\n' + envBlock;
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        model: 'claude',
+        messages: [{ role: 'user', content: 'hi' }],
+        system: sys,
+      }),
+    );
+    const { body: outBytes, info } = await transformRequest(body);
+    expect(info.compressed).toBe(true);
+    expect(info.dynamicBlockCount).toBe(1);
+    expect(info.dynamicChars).toBeGreaterThan(0);
+    expect(info.staticChars).toBeGreaterThan(info.dynamicChars);
+
+    const out = JSON.parse(new TextDecoder().decode(outBytes));
+    const blocks = out.system as any[];
+    // Find the last image block.
+    let lastImageIdx = -1;
+    for (let i = 0; i < blocks.length; i++) if (blocks[i].type === 'image') lastImageIdx = i;
+    expect(lastImageIdx).toBeGreaterThanOrEqual(0);
+
+    // Everything AFTER the last image should be text and should contain the
+    // <env> block verbatim — that's the whole point of the split.
+    const tail = blocks
+      .slice(lastImageIdx + 1)
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('\n');
+    expect(tail).toContain('<env>');
+    expect(tail).toContain('Working directory: /tmp/parityproj');
+
+    // And the static slab must NOT show up in any text block — it lives in
+    // the image now.
+    for (const b of blocks) {
+      if (b.type === 'text') expect(b.text).not.toContain('claude.md ground truth.');
+    }
+  });
+
+  it('puts cache_control on the image only, never on the dynamic tail', async () => {
+    const sys =
+      'claude.md\n'.repeat(500) +
+      '<env>\nWorking directory: /tmp/x\n</env>\n' +
+      '<context name="todoList">\n[ ] do thing\n</context>';
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        model: 'claude',
+        messages: [{ role: 'user', content: 'hi' }],
+        system: sys,
+      }),
+    );
+    const { body: outBytes, info } = await transformRequest(body);
+    expect(info.dynamicBlockCount).toBe(2);
+
+    const out = JSON.parse(new TextDecoder().decode(outBytes));
+    const cached = (out.system as any[]).filter((b: any) => b.cache_control);
+    expect(cached.length).toBe(1);
+    expect(cached[0].type).toBe('image');
+  });
+
+  it('passes through when the system prompt is only dynamic blocks', async () => {
+    const sys = '<env>\nWorking directory: /tmp\n</env>';
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        model: 'claude',
+        messages: [{ role: 'user', content: 'hi' }],
+        system: sys,
+      }),
+    );
+    const { body: outBytes, info } = await transformRequest(body, { minCompressChars: 100 });
+    // Static slab is empty → below_min_chars → no-op pass-through.
+    expect(info.compressed).toBe(false);
+    expect(info.reason).toMatch(/below_min_chars/);
+    const out = JSON.parse(new TextDecoder().decode(outBytes));
+    expect(out.system).toBe(sys);
+  });
 });
