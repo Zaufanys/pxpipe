@@ -57,6 +57,15 @@ export interface ToolDef {
 
 export type SystemField = string | Array<TextBlock | ImageBlock>;
 
+/** Anthropic's per-response token usage block. Same shape on streaming
+ *  (inside the message_start event payload) and non-streaming responses. */
+export interface Usage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 export interface MessagesRequest {
   model: string;
   messages: Message[];

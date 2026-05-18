@@ -8,6 +8,7 @@
  */
 
 import { transformRequest, type TransformOptions, type TransformInfo } from './transform.js';
+import type { Usage } from './types.js';
 
 export interface ProxyConfig {
   /** Anthropic API base, no trailing slash. Defaults to api.anthropic.com. */
@@ -24,9 +25,109 @@ export interface ProxyEvent {
   method: string;
   path: string;
   status: number;
+  /** Wall-clock ms from request start to event fire (≈ end of upstream response
+   *  body, since we now wait for usage extraction). For first-byte latency see
+   *  firstByteMs. */
   durationMs: number;
+  /** Wall-clock ms from request start to upstream response headers. */
+  firstByteMs?: number;
   info?: TransformInfo;
+  /** Usage block from Anthropic's response — input/output/cache tokens. */
+  usage?: Usage;
   error?: string;
+}
+
+/**
+ * Tee the response body so we can scan for the usage block (SSE: in the
+ * message_start event; non-stream: at the top of the JSON) without buffering
+ * the whole stream or blocking the client. Returns the un-touched response
+ * to forward to the client + a Promise that resolves to the parsed Usage
+ * (or undefined if we couldn't find one within the budget).
+ */
+function teeForUsage(res: Response): {
+  response: Response;
+  usagePromise: Promise<Usage | undefined>;
+} {
+  // Errors and bodyless responses: nothing to extract.
+  if (!res.body || res.status >= 400) {
+    return { response: res, usagePromise: Promise.resolve(undefined) };
+  }
+  const ct = (res.headers.get('content-type') ?? '').toLowerCase();
+  const [forClient, forUs] = res.body.tee();
+
+  const usagePromise = (async (): Promise<Usage | undefined> => {
+    const reader = forUs.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const drain = async () => {
+      try {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    try {
+      if (ct.includes('text/event-stream')) {
+        // SSE: usage is in the FIRST event (`message_start`). Cap scan at 64
+        // KiB so we don't hold the tee buffer open for the entire stream.
+        const MAX = 65536;
+        while (buf.length < MAX) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const idx = buf.indexOf('event: message_start');
+          if (idx >= 0) {
+            // The data: line follows. Match the first data: after that idx.
+            const m = /^data:\s*(.+)$/m.exec(buf.slice(idx));
+            if (m) {
+              try {
+                const j = JSON.parse(m[1]!);
+                void drain();
+                return j?.message?.usage as Usage | undefined;
+              } catch {
+                /* not yet a complete JSON line — keep reading */
+              }
+            }
+          }
+        }
+        void drain();
+        return undefined;
+      }
+
+      if (ct.includes('application/json')) {
+        // Non-stream: buffer fully (capped at 4 MiB).
+        const MAX = 4 * 1024 * 1024;
+        while (buf.length < MAX) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+        }
+        try {
+          const j = JSON.parse(buf);
+          return j?.usage as Usage | undefined;
+        } catch {
+          return undefined;
+        }
+      }
+    } catch {
+      /* tee may be released early if the client aborts — ignore */
+    }
+    void drain();
+    return undefined;
+  })();
+
+  return {
+    response: new Response(forClient, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    }),
+    usagePromise,
+  };
 }
 
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
@@ -69,13 +170,21 @@ export function createProxy(config: ProxyConfig = {}) {
     const url = new URL(req.url);
     const path = url.pathname + url.search;
 
-    const fire = (status: number, info?: TransformInfo, error?: string): void => {
+    const fire = (
+      status: number,
+      info?: TransformInfo,
+      error?: string,
+      firstByteMs?: number,
+      usage?: Usage,
+    ): void => {
       void config.onRequest?.({
         method: req.method,
         path: url.pathname,
         status,
         durationMs: Date.now() - t0,
+        firstByteMs,
         info,
+        usage,
         error,
       });
     };
@@ -127,9 +236,20 @@ export function createProxy(config: ProxyConfig = {}) {
       });
     }
 
-    fire(upstreamRes.status, info);
+    const firstByteMs = Date.now() - t0;
 
-    return new Response(upstreamRes.body, {
+    // Tee the upstream body so we can extract Anthropic's usage block. The
+    // client gets one side immediately; we read the other in the background.
+    const { response: teed, usagePromise } = teeForUsage(upstreamRes);
+
+    // Fire the host event once usage is known (or once we've given up on
+    // finding it). Don't await — the response below is what unblocks the
+    // client; fire happens in the background.
+    void usagePromise
+      .then((usage) => fire(upstreamRes.status, info, undefined, firstByteMs, usage))
+      .catch(() => fire(upstreamRes.status, info, undefined, firstByteMs, undefined));
+
+    return new Response(teed.body, {
       status: upstreamRes.status,
       statusText: upstreamRes.statusText,
       headers: filterHeaders(upstreamRes.headers, STRIP_RES_HEADERS),
