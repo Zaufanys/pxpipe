@@ -849,6 +849,7 @@ export class DashboardState {
       olderThanDays: body.olderThanDays,
       keepLast: body.keepLast,
       sessionId: body.sessionId,
+      sessionIds: Array.isArray(body.sessionIds) ? body.sessionIds : undefined,
     });
     return jsonResponse(report);
   }
@@ -1028,9 +1029,22 @@ const DASHBOARD_HTML = `<!doctype html>
 <div class="panel" style="margin-bottom:22px">
   <h2>sessions <span class="small" id="sess_count" style="color:#6e7681"></span></h2>
   <div class="small" id="sess_status" style="margin-bottom:12px;color:#6e7681">loading...</div>
+  <!--
+    Bulk-action bar. Industry-standard pattern (Gmail / GitHub / Linear /
+    Vercel): hidden when selection is empty; slides in showing the count
+    and the destructive action when ≥1 row is checked. Replaces the
+    normal per-row controls so the bulk action is unmissable.
+  -->
+  <div id="sess_action_bar" style="display:none;margin-bottom:10px;padding:8px 12px;background:#1f2a37;border:1px solid #30363d;border-radius:6px;align-items:center;gap:12px">
+    <span class="small" id="sess_action_count" style="color:#c9d1d9">0 selected</span>
+    <button id="sess_action_delete" type="button" style="background:#21262d;color:#f85149;border:1px solid #30363d;padding:4px 12px;cursor:pointer">Delete selected</button>
+    <button id="sess_action_clear" type="button" style="background:transparent;color:#6e7681;border:1px solid #30363d;padding:4px 12px;cursor:pointer">Clear (Esc)</button>
+    <span class="small" style="color:#6e7681;margin-left:auto">Shift-click to range-select</span>
+  </div>
   <table>
     <thead>
       <tr>
+        <th style="width:24px"><input type="checkbox" id="sess_select_all" title="Select all visible" /></th>
         <th>session</th>
         <th>project</th>
         <th>claude code</th>
@@ -1205,6 +1219,66 @@ function shortPath(p) {
 // order. This avoids the visible flash that an innerHTML wipe would cause.
 const sessRowEls = new Map();
 
+// ---- session selection state machine -------------------------------------
+//
+// Industry-standard multi-select-and-delete pattern (Gmail / GitHub /
+// Linear): per-row checkbox + header 3-state checkbox + shift-click range
+// + contextual action bar + Esc-clears. Selection survives diff-renders by
+// being keyed on session id, not DOM nodes — when renderSessions rewrites a
+// row's innerHTML we re-apply checked state from selectedSessionIds.
+const selectedSessionIds = new Set();
+// IDs in the order they appear in the most recent render. Needed for
+// shift-click range selection (pick rows between two ids).
+let sessionIdOrder = [];
+// The last id the operator clicked or checked. Anchor for shift-click.
+let lastClickedSessionId = null;
+
+function updateSessActionBar() {
+  const bar = document.getElementById('sess_action_bar');
+  const countEl = document.getElementById('sess_action_count');
+  const n = selectedSessionIds.size;
+  if (n === 0) {
+    bar.style.display = 'none';
+  } else {
+    bar.style.display = 'flex';
+    countEl.textContent = n + ' selected';
+  }
+  // Header checkbox tri-state: empty / indeterminate / all.
+  const head = document.getElementById('sess_select_all');
+  if (head) {
+    const total = sessionIdOrder.length;
+    if (n === 0) { head.checked = false; head.indeterminate = false; }
+    else if (n >= total) { head.checked = true; head.indeterminate = false; }
+    else { head.checked = false; head.indeterminate = true; }
+  }
+}
+
+function setSessionSelected(id, on) {
+  if (on) selectedSessionIds.add(id);
+  else selectedSessionIds.delete(id);
+  const box = document.querySelector('input.sess_check[data-id="' + cssEscape(id) + '"]');
+  if (box) box.checked = on;
+  updateSessActionBar();
+}
+
+function cssEscape(s) {
+  // Sufficient for our use case (session ids are hex-ish + dashes).
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, '\\\\$&');
+}
+
+function reapplySessionSelectionState() {
+  // After a diff-render, re-attach checked state from the source-of-truth
+  // Set. Also drop selections for sessions that vanished from the table.
+  const seen = new Set(sessionIdOrder);
+  for (const id of [...selectedSessionIds]) {
+    if (!seen.has(id)) selectedSessionIds.delete(id);
+  }
+  document.querySelectorAll('input.sess_check').forEach((box) => {
+    box.checked = selectedSessionIds.has(box.dataset.id);
+  });
+  updateSessActionBar();
+}
+
 function sessRowHtml(s) {
   const cc = s.claudeCode;
   const ccLabel = cc
@@ -1213,7 +1287,11 @@ function sessRowHtml(s) {
     : '<span style="color:#6e7681">-</span>';
   const disk = fmtBytes((s.jsonlBytes||0) + (s.sidecarBytes||0));
   const projShort = s.project ? escapeHtml(shortPath(s.project)) : '<span style="color:#6e7681">-</span>';
+  // The checkbox CHECKED state is restored from selectedSessionIds in
+  // renderSessions, NOT baked into this HTML. That way diff-renders
+  // don't clobber the operator's in-progress selection.
   return ''
+    + '<td><input type="checkbox" class="sess_check" data-id="' + escapeHtml(s.id) + '" /></td>'
     + '<td><a href="/sessions/' + encodeURIComponent(s.id) + '" style="color:#58a6ff">'
     +   escapeHtml(s.id) + '</a></td>'
     + '<td>' + projShort + '</td>'
@@ -1260,6 +1338,10 @@ function renderSessions(payload) {
       sessRowEls.delete(id);
     }
   }
+  // Selection bookkeeping: capture display order for shift-click range, and
+  // re-apply checked state on every render (innerHTML rewrites lose it).
+  sessionIdOrder = rows.map((s) => s.id);
+  reapplySessionSelectionState();
 }
 
 // ---- stats table ---------------------------------------------------------
@@ -1381,11 +1463,97 @@ document.getElementById('prune_btn').addEventListener('click', () => {
     document.getElementById('prune_result').textContent = 'error: ' + e.message;
   });
 });
-// One delegated listener handles every row's del button. Survives diff renders.
+// One delegated listener handles every row's del button + per-row checkbox.
+// Survives diff renders.
 document.getElementById('sess_rows').addEventListener('click', (ev) => {
   const t = ev.target;
-  if (t && t.dataset && t.dataset.del) deleteSession(t.dataset.del);
+  if (!t) return;
+  // Per-row delete button.
+  if (t.dataset && t.dataset.del) { deleteSession(t.dataset.del); return; }
+  // Per-row checkbox toggle. Shift-click does range select between this row
+  // and the last-clicked anchor (Gmail / GitHub convention).
+  if (t.classList && t.classList.contains('sess_check')) {
+    const id = t.dataset.id;
+    if (ev.shiftKey && lastClickedSessionId && lastClickedSessionId !== id) {
+      const a = sessionIdOrder.indexOf(lastClickedSessionId);
+      const b = sessionIdOrder.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        // Range select propagates the clicked checkbox's new state to all
+        // rows in [lo, hi]. Matches macOS Finder / Gmail behavior.
+        const on = t.checked;
+        for (let i = lo; i <= hi; i++) setSessionSelected(sessionIdOrder[i], on);
+      }
+    } else {
+      setSessionSelected(id, t.checked);
+    }
+    lastClickedSessionId = id;
+  }
 });
+
+// Header checkbox: select-all / clear-all on visible rows. Tri-state is
+// driven from updateSessActionBar(); the operator's click always either
+// selects all (when 0 or some) or clears all (when all selected).
+document.getElementById('sess_select_all').addEventListener('click', (ev) => {
+  const target = ev.currentTarget;
+  const turnOn = !!target.checked;
+  for (const id of sessionIdOrder) {
+    if (turnOn) selectedSessionIds.add(id);
+    else selectedSessionIds.delete(id);
+  }
+  document.querySelectorAll('input.sess_check').forEach((box) => {
+    box.checked = turnOn;
+  });
+  updateSessActionBar();
+});
+
+// Action bar: bulk delete + clear-selection.
+document.getElementById('sess_action_delete').addEventListener('click', () => {
+  bulkDeleteSelectedSessions().catch((e) => {
+    document.getElementById('prune_result').textContent = 'error: ' + e.message;
+  });
+});
+document.getElementById('sess_action_clear').addEventListener('click', () => {
+  selectedSessionIds.clear();
+  reapplySessionSelectionState();
+});
+
+// Esc clears the selection — fast escape hatch when the operator changed
+// their mind. Only fires when no input/textarea has focus so it doesn't
+// trample text input.
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (selectedSessionIds.size === 0) return;
+  selectedSessionIds.clear();
+  reapplySessionSelectionState();
+});
+
+async function bulkDeleteSelectedSessions() {
+  const ids = [...selectedSessionIds];
+  if (ids.length === 0) return;
+  // Confirm modal: count + a sample of session ids so the operator can
+  // sanity-check what they're about to delete. Show first 3, "and N more".
+  const sample = ids.slice(0, 3).map((id) => id.slice(0, 12)).join(', ');
+  const more = ids.length > 3 ? ' and ' + (ids.length - 3) + ' more' : '';
+  if (!window.confirm(
+    'Delete ' + ids.length + ' session' + (ids.length === 1 ? '' : 's') + '?\\n\\n'
+    + sample + more + '\\n\\nThis cannot be undone.'
+  )) return;
+  const r = await fetch('/api/sessions/prune', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionIds: ids, force: true }),
+  }).then(r => r.json());
+  document.getElementById('prune_result').textContent =
+    'removed ' + numFmt(r.sessionsRemoved.length) + ' sessions, '
+    + numFmt(r.eventsRemoved) + ' events, '
+    + fmtBytes(r.jsonlBytesFreed + r.sidecarBytesFreed);
+  selectedSessionIds.clear();
+  tickSlow();
+}
 
 // ---- slow tick (5s) - sessions / stats / disk ----------------------------
 

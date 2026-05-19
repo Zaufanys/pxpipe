@@ -279,6 +279,46 @@ describe('selectSessionsToRemove', () => {
     });
     expect(removed.size).toBe(0);
   });
+
+  it('selects multiple via sessionIds[] (bulk-delete UI)', async () => {
+    writeEvents(tmp, [
+      ev({ first_user_sha8: 'aaaaaaaa' }),
+      ev({ first_user_sha8: 'bbbbbbbb' }),
+      ev({ first_user_sha8: 'cccccccc' }),
+      ev({ first_user_sha8: 'dddddddd' }),
+    ]);
+    const { sessions } = await aggregateSessions(tmp);
+    const removed = selectSessionsToRemove(sessions, {
+      sessionIds: ['aaaaaaaa', 'cccccccc'],
+      force: false,
+    });
+    expect([...removed].sort()).toEqual(['aaaaaaaa', 'cccccccc']);
+  });
+
+  it('sessionIds[] silently skips unknown ids (race-safe)', async () => {
+    writeEvents(tmp, [ev({ first_user_sha8: 'aaaaaaaa' })]);
+    const { sessions } = await aggregateSessions(tmp);
+    const removed = selectSessionsToRemove(sessions, {
+      sessionIds: ['aaaaaaaa', 'doesnotexist', 'alsogone'],
+      force: false,
+    });
+    expect([...removed]).toEqual(['aaaaaaaa']);
+  });
+
+  it('sessionIds[] and sessionId compose (single + bulk in one call)', async () => {
+    writeEvents(tmp, [
+      ev({ first_user_sha8: 'aaaaaaaa' }),
+      ev({ first_user_sha8: 'bbbbbbbb' }),
+      ev({ first_user_sha8: 'cccccccc' }),
+    ]);
+    const { sessions } = await aggregateSessions(tmp);
+    const removed = selectSessionsToRemove(sessions, {
+      sessionId: 'aaaaaaaa',
+      sessionIds: ['bbbbbbbb'],
+      force: false,
+    });
+    expect([...removed].sort()).toEqual(['aaaaaaaa', 'bbbbbbbb']);
+  });
 });
 
 // ---- prune (dry-run + apply) ----------------------------------------------

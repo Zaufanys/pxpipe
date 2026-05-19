@@ -279,6 +279,11 @@ export interface PruneOptions {
   keepLast?: number;
   /** Drop a single session by ID. */
   sessionId?: string;
+  /** Drop multiple sessions in one atomic pass — bulk-delete from the
+   *  dashboard's checkbox UI. Unknown IDs are silently ignored (the
+   *  caller may have raced a concurrent prune). Coexists with
+   *  `sessionId` (single) — both contribute to the removal set. */
+  sessionIds?: string[];
   /** When true, actually delete. When false (the default), report only. */
   force: boolean;
 }
@@ -306,6 +311,14 @@ export function selectSessionsToRemove(
 
   if (opts.sessionId) {
     if (sessions.has(opts.sessionId)) toRemove.add(opts.sessionId);
+  }
+
+  if (Array.isArray(opts.sessionIds)) {
+    for (const id of opts.sessionIds) {
+      // Silently skip unknown IDs — the client may have raced a concurrent
+      // prune. The report will reflect what we actually removed.
+      if (typeof id === 'string' && sessions.has(id)) toRemove.add(id);
+    }
   }
 
   if (typeof opts.olderThanDays === 'number') {
