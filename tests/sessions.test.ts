@@ -145,6 +145,7 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'aaaaaaaa',
         compressed: true,
         orig_chars: 100_000,
+        compressed_chars: 100_000,
         image_count: 2,
       }),
       // 5,000 chars compressed to 1 image — NET LOSS.
@@ -155,6 +156,7 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'aaaaaaaa',
         compressed: true,
         orig_chars: 5_000,
+        compressed_chars: 5_000,
         image_count: 1,
       }),
       // Not compressed at all — skipped.
@@ -175,9 +177,9 @@ describe('aggregateSessions', () => {
   it('reports negative tokensSavedEst when all compressions net-lose', async () => {
     writeEvents(tmp, [
       // 3 small blocks each net-lose ~1250 tokens.
-      ev({ first_user_sha8: 'bbbbbbbb', compressed: true, orig_chars: 5000, image_count: 1 }),
-      ev({ first_user_sha8: 'bbbbbbbb', compressed: true, orig_chars: 5000, image_count: 1 }),
-      ev({ first_user_sha8: 'bbbbbbbb', compressed: true, orig_chars: 5000, image_count: 1 }),
+      ev({ first_user_sha8: 'bbbbbbbb', compressed: true, orig_chars: 5000, compressed_chars: 5000, image_count: 1 }),
+      ev({ first_user_sha8: 'bbbbbbbb', compressed: true, orig_chars: 5000, compressed_chars: 5000, image_count: 1 }),
+      ev({ first_user_sha8: 'bbbbbbbb', compressed: true, orig_chars: 5000, compressed_chars: 5000, image_count: 1 }),
     ]);
     const { sessions } = await aggregateSessions(tmp);
     const s = sessions.get('bbbbbbbb')!;

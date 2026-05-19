@@ -29,6 +29,10 @@ export interface TrackEvent {
   compressed?: boolean;
   reason?: string;
   orig_chars?: number;
+  /** Sum of text-chars actually replaced by image blocks this request (static
+   *  slab + reminders + tool_results). Apples-to-apples with image_count for
+   *  savings math: textTokens(compressed_chars/4) vs imageTokens(image_count×2500). */
+  compressed_chars?: number;
   image_count?: number;
   image_bytes?: number;
   static_chars?: number;
@@ -160,6 +164,9 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     if (info.compressed !== undefined) out.compressed = info.compressed;
     if (info.reason) out.reason = info.reason;
     if (info.origChars !== undefined) out.orig_chars = info.origChars;
+    if (info.compressedChars !== undefined && info.compressedChars > 0) {
+      out.compressed_chars = info.compressedChars;
+    }
     if (info.imageCount !== undefined) out.image_count = info.imageCount;
     if (info.imageBytes !== undefined) out.image_bytes = info.imageBytes;
     if (info.staticChars !== undefined) out.static_chars = info.staticChars;

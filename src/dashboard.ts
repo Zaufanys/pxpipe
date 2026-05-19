@@ -129,14 +129,21 @@ function effectiveCost(
  */
 function baselineCost(
   actualEff: number,
-  origChars: number,
+  compressedChars: number,
   imageCount: number,
   cacheCreate: number,
   cacheRead: number,
 ): number {
-  const txtReplaced = Math.floor(origChars / 4); // ~4 chars per token in English
+  // compressedChars is the actual text we IMAGE-encoded (static slab +
+  // reminders + tool_results that passed the break-even gate). NOT the
+  // total origChars — that would include text-only blocks that stayed
+  // as text and wouldn't have appeared as `imageCount` either, making
+  // the apples-to-apples comparison invalid.
+  const txtReplaced = Math.floor(compressedChars / 4); // ~4 chars per token
   const imgTokensEst = estImageTokens(imageCount);
-  const extraText = Math.max(0, txtReplaced - imgTokensEst);
+  // extraText CAN be negative when image cost > text cost. Don't clamp —
+  // surfaces honest negatives so the operator can see cost-bleed.
+  const extraText = txtReplaced - imgTokensEst;
   const cachedTotal = cacheCreate + cacheRead;
   const baselineRate =
     cachedTotal > 0 ? (cacheCreate / cachedTotal) * 1.25 + (cacheRead / cachedTotal) * 0.1 : 0.1;
@@ -208,7 +215,7 @@ export class DashboardState {
     const eff = haveUsage ? effectiveCost(inp, cc, cr) : 0;
     const baselineEff =
       haveUsage && compressed
-        ? baselineCost(eff, info?.origChars ?? 0, info?.imageCount ?? 0, cc, cr)
+        ? baselineCost(eff, info?.compressedChars ?? 0, info?.imageCount ?? 0, cc, cr)
         : eff;
 
     const prevSaved = this.totals.effectiveInputBaselineEst - this.totals.effectiveInputActual;

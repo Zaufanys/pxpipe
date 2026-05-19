@@ -159,17 +159,13 @@ export async function aggregateSessions(
     if (s.project === undefined && ev.cwd) s.project = ev.cwd;
     if (
       ev.compressed &&
-      typeof ev.orig_chars === 'number' &&
+      typeof ev.compressed_chars === 'number' &&
       typeof ev.image_count === 'number'
     ) {
-      // Honest savings math, mirrors src/dashboard.ts:
-      //   textTokens  = orig_chars / 4      (Anthropic ~4 chars/token rule)
-      //   imageTokens = image_count × 2500  (empirical per-image cost)
-      //   tokensSaved = textTokens − imageTokens  (CAN be negative when
-      //     small per-block compressions cost more than they save)
-      // Previous formula compared chars to PNG bytes (mismatched units) AND
-      // clamped via `if (saved > 0)` which hid the cost-bleed entirely.
-      const textTokens = ev.orig_chars / 4;
+      // Honest savings math (mirrors src/dashboard.ts:baselineCost).
+      // compressed_chars is the actual text we IMAGE-encoded; orig_chars
+      // would include text-only blocks that didn't contribute to image_count.
+      const textTokens = ev.compressed_chars / 4;
       const imageTokens = ev.image_count * 2500;
       const tokensSaved = textTokens - imageTokens;
       s.tokensSavedEst += Math.round(tokensSaved);

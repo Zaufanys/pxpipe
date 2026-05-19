@@ -197,6 +197,15 @@ export interface TransformInfo {
   compressed: boolean;
   reason?: string;
   origChars: number;
+  /** Total chars of source text that were image-encoded across ALL blocks
+   *  this request (static slab + reminders + tool_results). Pairs with
+   *  `imageCount` for honest savings math:
+   *     textTokens  = compressedChars / 4
+   *     imageTokens = imageCount × 2500
+   *     savings     = textTokens − imageTokens
+   *  Unlike `origChars` (which is just static slab + tool docs),
+   *  `compressedChars` reflects what `imageCount` actually replaced. */
+  compressedChars: number;
   imageCount: number;
   imageBytes: number;
   /** Length of the static (cacheable) slab rendered into the image. */
@@ -973,6 +982,7 @@ export async function transformRequest(
   const info: TransformInfo = {
     compressed: false,
     origChars: 0,
+    compressedChars: 0,
     imageCount: 0,
     imageBytes: 0,
     staticChars: 0,
@@ -1089,6 +1099,10 @@ export async function transformRequest(
   // cache key (= image bytes) stays stable across turns.
   const combined = [staticText, toolDocsText].filter((s) => s.length > 0).join('\n\n');
   info.origChars = combined.length;
+  // Track chars of the static slab+tools that DO end up imaged. The
+  // break-even gate below may reject — bump only when the slab actually
+  // renders. Reminder/tool_result compressions add to this at their sites.
+  info.compressedChars = 0;
   // Hash the EXACT text that goes into the image. Repeats of this hash across
   // turns = cache_control should be earning its keep.
   if (combined) info.systemSha8 = await sha8(combined);
@@ -1123,6 +1137,8 @@ export async function transformRequest(
     imageBlocks.push(makeImageBlock(b64, i === images.length - 1));
   }
   info.imageCount = imageBlocks.length;
+  // Static slab made it through the break-even gate and rendered.
+  info.compressedChars += combined.length;
   // Stash the first image's raw bytes + dimensions for the dashboard preview.
   // Stripped before persisting to JSONL by toTrackEvent. Memory cost is bounded
   // (we only ever keep ONE — the latest — via the dashboard's replace-on-update).
@@ -1202,13 +1218,15 @@ export async function transformRequest(
             processedExisting.push(blk);
             continue;
           }
+          const reminderText = (blk as TextBlock).text;
           const { blocks: imgs, droppedChars, droppedCodepoints: dcp } =
-            await textToImageBlocks((blk as TextBlock).text, o.cols);
+            await textToImageBlocks(reminderText, o.cols);
           for (const img of imgs) {
             processedExisting.push(img);
             info.imageBytes += approxBlockBytes(img);
           }
           info.reminderImgs = (info.reminderImgs ?? 0) + imgs.length;
+          info.compressedChars += reminderText.length;
           info.imageCount += imgs.length;
           info.droppedChars = (info.droppedChars ?? 0) + droppedChars;
           for (const [cp, n] of dcp) {
@@ -1270,6 +1288,9 @@ export async function transformRequest(
                 for (const img of imgs) info.imageBytes += approxBlockBytes(img);
                 info.toolResultImgs = (info.toolResultImgs ?? 0) + imgs.length;
                 info.imageCount += imgs.length;
+                // Use original (pre-paging) length: that's what we would have
+                // paid for as text.
+                info.compressedChars += inner.length;
                 info.droppedChars = (info.droppedChars ?? 0) + droppedChars;
                 for (const [cp, n] of dcp) {
                   droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
@@ -1313,6 +1334,7 @@ export async function transformRequest(
                 }
                 info.toolResultImgs = (info.toolResultImgs ?? 0) + imgs.length;
                 info.imageCount += imgs.length;
+                info.compressedChars += innerText.length;
                 info.droppedChars = (info.droppedChars ?? 0) + droppedChars;
                 for (const [cp, n] of dcp) {
                   droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
