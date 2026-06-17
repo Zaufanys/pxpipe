@@ -67,10 +67,11 @@ variance, not compression. Small n, details and caveats below.
 (~3.5 chars/token). The built-in gate only images content where the math wins,
 calibrated against N=391 production rows.
 
-**Model scope: Fable 5 only** (`claude-fable-5`), enforced in library and
+**Model scope: Fable 5 by default** (`claude-fable-5`), enforced in library and
 proxy. Opus 4.7/4.8 was the original scope but misread ~7% of renders
-(`10200`→`9400`), so it was disabled once Fable 5 hit 100/100 with identical
-image billing. Everything else passes through untouched.
+(`10200`→`9400`), so it was turned **off by default** once Fable 5 hit 100/100
+with identical image billing — opt it back in at your own risk via
+`PXPIPE_MODELS` or the dashboard chips. Everything else passes through untouched.
 
 ## Benchmarks (reproducible)
 
@@ -201,15 +202,16 @@ wrapLines(text: string, cols: number, markerScale?: number): string[]
 
 | constant | value | meaning |
 |---|---|---|
-| `DENSE_CONTENT_CHARS_PER_IMAGE` | 5 000 | target chars per page |
-| `READABLE_CHARS_PER_IMAGE` | 50 000 | hard ceiling per page |
-| `DEFAULT_COLS` | 313 | column width |
-| `MAX_HEIGHT_PX` | 1 568 | page height ceiling |
+| `MAX_HEIGHT_PX` | 1 932 | page-height ceiling (~1932² max page) |
+| `DEFAULT_COLS` | 313 | static-slab width (→1573 px) |
+| `READABLE_CHARS_PER_IMAGE` | 50 000 | chars per static-slab page |
+| `DENSE_CONTENT_COLS` | 384 | dense tool/history width (→1928 px) |
+| `DENSE_CONTENT_CHARS_PER_IMAGE` | 92 160 | chars per dense page (full 1928×1928) |
 
 ## Development
 
 ```bash
-pnpm install && pnpm test     # 323 tests
+pnpm install && pnpm test     # 342 tests
 pnpm run build                # regenerates dist/
 ```
 
