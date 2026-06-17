@@ -31,6 +31,17 @@ into full rows with ↵ marking original newlines, OCR instruction banner
 co-rendered on top. The model reads renders like this at 100/100 on a clean
 eval (see benchmarks).*
 
+## Demo
+
+[![pxpipe vs plain Claude — side-by-side A/B on Opus 4.8](https://raw.githubusercontent.com/teamchong/pxpipe/main/docs/assets/pxpipe-ab-test-thumb.jpg)](https://github.com/teamchong/pxpipe/blob/main/docs/assets/pxpipe-ab-test.mp4)
+
+*Side-by-side — plain Claude (left) vs pxpipe (right), both on **Opus 4.8** (opt-in; pxpipe is tuned for Fable, currently offline). Click to play.*
+
+- **Demo 1 — fix a failing test suite:** both pass; the dashboard shows pxpipe cut the request to a fraction of the tokens (real, server-measured **context/token reduction**).
+- **Demo 2 — a big file-context (40 files, ~382k tokens) plus a math question and a "count this phrase" task:** the math answer (a small **text** needle) reads on both. The phrase-count needs reading the **imaged** filler — so pxpipe-on-Opus can't read it and **honestly surfaces that it won't fabricate a number** (the documented lossy limit: exact values stay text). Plain, meanwhile, bogs down counting file-by-file.
+
+**Fable 5 demo (the default, 100/100 reader):** coming when Fable is available again — pxpipe is tuned for Fable, so that will be the headline clip.
+
 ## Try it (30 seconds)
 
 ```bash
