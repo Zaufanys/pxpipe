@@ -23,6 +23,7 @@ import {
   shrinkColsToContent,
   MAX_HEIGHT_PX,
   NL_SENTINEL,
+  neutralizeSentinel,
   PAD_X,
   PAD_Y,
   CELL_W,
@@ -34,7 +35,7 @@ import {
   renderTextToPngsWithCharLimit,
 } from './render.js';
 import { bytesToBase64 } from './png.js';
-import { collapseHistory } from './history.js';
+import { collapseHistory, HISTORY_SYNTHETIC_INTRO } from './history.js';
 import type { GptHistoryOptions } from './openai-history.js';
 import { CACHE_CREATE_RATE, CACHE_READ_RATE } from './baseline.js';
 import { stripSchemaDescriptions } from './schema-strip.js';
@@ -287,7 +288,12 @@ export function compactSlabWhitespace(text: string): string {
  *  input unchanged on sentinel collision. */
 function maybeReflow(text: string, enabled: boolean): string {
   if (!enabled) return text;
-  return reflow(text) ?? text;
+  // Neutralize any pre-existing ↵ so reflow packs newlines instead of bailing to a raw,
+  // unpacked render (the tool_result "newlines not converted to ↵" case — common when the
+  // content is about pxpipe itself). Render-only; originals are preserved via
+  // recordRecoverable(innerRaw), so this substitution never reaches recovery.
+  const safe = neutralizeSentinel(text);
+  return reflow(safe) ?? safe;
 }
 
 /** Decompose the break-even gate into components for telemetry. Returns the
@@ -735,7 +741,7 @@ function relocateAnchorToHistoryImage(messages: Message[] | undefined): void {
   for (const m of messages) {
     if (!Array.isArray(m.content)) continue;
     const first = m.content[0] as TextBlock | undefined;
-    if (!first || first.type !== 'text' || first.text !== '[Earlier in this conversation:]') continue;
+    if (!first || first.type !== 'text' || first.text !== HISTORY_SYNTHETIC_INTRO) continue;
     for (let i = m.content.length - 1; i >= 0; i--) {
       const b = m.content[i];
       if (b && (b as ImageBlock).type === 'image') {
@@ -1239,6 +1245,11 @@ async function runHistoryCollapseAndFinalize(
       info.imageCount += histInfo.collapsedImages;
       info.imageBytes += histInfo.collapsedImageBytes;
       info.imagePixels = (info.imagePixels ?? 0) + histInfo.collapsedImagePixels;
+      // Register the rendered (colored) history PNGs into the dashboard image ring
+      // so they are visible, not merely counted. Every other image path feeds this.
+      // imagePngs + imageDims must be pushed in lockstep (ring reads them parallel).
+      (info.imagePngs ??= []).push(...histInfo.collapsedPngs);
+      (info.imageDims ??= []).push(...histInfo.collapsedImageDims);
       info.droppedChars = (info.droppedChars ?? 0) + histInfo.droppedChars;
       for (const [cp, n] of histInfo.droppedCodepoints) {
         droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
@@ -1794,6 +1805,11 @@ export async function transformRequest(
       info.imageCount += histInfo.collapsedImages;
       info.imageBytes += histInfo.collapsedImageBytes;
       info.imagePixels = (info.imagePixels ?? 0) + histInfo.collapsedImagePixels;
+      // Register the rendered (colored) history PNGs into the dashboard image ring
+      // so they are visible, not merely counted. Every other image path feeds this.
+      // imagePngs + imageDims must be pushed in lockstep (ring reads them parallel).
+      (info.imagePngs ??= []).push(...histInfo.collapsedPngs);
+      (info.imageDims ??= []).push(...histInfo.collapsedImageDims);
       info.droppedChars = (info.droppedChars ?? 0) + histInfo.droppedChars;
       for (const [cp, n] of histInfo.droppedCodepoints) {
         droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);

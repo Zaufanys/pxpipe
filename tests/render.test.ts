@@ -7,6 +7,11 @@ import {
   maxFittingCols,
   expandTabsInLine,
   minifyForRender,
+  roleSlotSegment,
+  slotCopyBody,
+  SLOT_MARK_USER,
+  SLOT_MARK_ASSISTANT,
+  ROLE_PALETTE,
   CELL_H,
   CELL_W,
 } from '../src/core/render.js';
@@ -2321,5 +2326,71 @@ describe('transform', () => {
       const text = synthesizeText(shape);
       expect(text.length).toBeLessThan(2000);
     });
+  });
+});
+
+describe('colorByRole (structure-through slot string)', () => {
+  // Map a slot string to per-codepoint slot numbers (0 = body, 1 = user, 2 = assistant).
+  const slotsOf = (s: string): number[] =>
+    Array.from(s).map((c) => {
+      const cp = c.codePointAt(0)!;
+      return cp === 1 ? 1 : cp === 2 ? 2 : 0;
+    });
+
+  it('tints only the structural tag chars; body stays slot 0 (black)', () => {
+    const seg = roleSlotSegment('user', 'hello body text', SLOT_MARK_USER);
+    const slots = slotsOf(seg);
+    const open = '<user>'.length; // 6
+    const close = '</user>'.length; // 7
+    const bodyStart = open + 1; // after the '\n'
+    expect(slots.slice(0, open).every((s) => s === 1)).toBe(true);
+    expect(slots.slice(bodyStart, bodyStart + 'hello body text'.length).every((s) => s === 0)).toBe(true);
+    expect(slots.slice(-close).every((s) => s === 1)).toBe(true);
+  });
+
+  it('a body that literally contains <user>/<assistant> stays slot 0 (no parse-back)', () => {
+    const body = 'the <user> and <assistant> tags are common';
+    const seg = roleSlotSegment('assistant', body, SLOT_MARK_ASSISTANT);
+    const bodyStart = '<assistant>'.length + 1;
+    const bodySlots = slotsOf(seg).slice(bodyStart, bodyStart + body.length);
+    expect(bodySlots.every((s) => s === 0)).toBe(true);
+  });
+
+  it('assistant turns carry slot 2', () => {
+    const seg = roleSlotSegment('assistant', 'reply', SLOT_MARK_ASSISTANT);
+    expect(slotsOf(seg).slice(0, '<assistant>'.length).every((s) => s === 2)).toBe(true);
+  });
+
+  it('slot string is width-identical to the text form and newlines line up', () => {
+    const body = 'line one\nline two\n  indented';
+    const text = `<user>\n${body}\n</user>`;
+    const seg = roleSlotSegment('user', body, SLOT_MARK_USER);
+    expect(seg.length).toBe(text.length);
+    for (let i = 0; i < text.length; i++) {
+      expect(seg[i] === '\n').toBe(text[i] === '\n'); // alignment cannot drift
+    }
+  });
+
+  it('slotCopyBody neutralizes literal slot-marker control chars in body', () => {
+    const forged = `a${SLOT_MARK_USER}b${SLOT_MARK_ASSISTANT}c`;
+    const copy = slotCopyBody(forged);
+    expect(slotsOf(copy).every((s) => s === 0)).toBe(true);
+    expect(copy.length).toBe(forged.length); // width preserved
+  });
+
+  it('user and assistant tag hues are distinct', () => {
+    expect(ROLE_PALETTE[0]).not.toEqual(ROLE_PALETTE[1]);
+  });
+
+  it('emits RGB truecolor PNG when slot coloring is on, grayscale when off', async () => {
+    const text = '<user>\nhello user\n</user>\n\n<assistant>\nhello model\n</assistant>';
+    const slot =
+      `${roleSlotSegment('user', 'hello user', SLOT_MARK_USER)}\n\n` +
+      `${roleSlotSegment('assistant', 'hello model', SLOT_MARK_ASSISTANT)}`;
+    const colored = await renderChunkToPng(text, 40, { colorByRole: true }, undefined, slot);
+    const plain = await renderChunkToPng(text, 40, {});
+    // PNG IHDR colorType byte: sig(8) + len(4) + "IHDR"(4) + ihdr[9] = offset 25.
+    expect(colored.png[25]).toBe(2); // 2 = truecolor RGB
+    expect(plain.png[25]).toBe(0); // 0 = grayscale
   });
 });

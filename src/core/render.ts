@@ -83,6 +83,9 @@ export interface RenderStyle {
   aa?: boolean;
   /** Cycle palette colors per glyph for per-character boundary cues. Forces RGB output. Composes with aa. */
   colorCycle?: boolean;
+  /** Tint only the structural <user>/<assistant> boundary tags (body stays black)
+   *  so speakers are scannable without recoloring content. Forces RGB. Composes with aa. */
+  colorByRole?: boolean;
 }
 
 // --- column-aware wrapping -------------------------------------------------
@@ -121,6 +124,21 @@ export const NL_SENTINEL = '↵';
 
 const NL_SENTINEL_CP = 0x21b5; // precomputed for hot-path comparisons
 
+/** Look-alike (U+23CE ⏎) for a ↵ that was ALREADY in the source content — distinct from
+ *  the U+21B5 ↵ we insert for newlines. reflow() bails when its input already contains the
+ *  sentinel; that's vanishingly rare for normal content but common when the content is about
+ *  pxpipe itself (rendered dumps, OCR, this very transcript). {@link neutralizeSentinel}
+ *  swaps pre-existing sentinels for this glyph in RENDER-PREP only, so reflow can pack
+ *  newlines instead of bailing to a raw, unpacked render. Originals are preserved verbatim
+ *  elsewhere (recordRecoverable / cache-stable history), and reflow()'s own round-trip
+ *  contract — and its tests — are left untouched. */
+export const NL_SENTINEL_LITERAL = '⏎'; // U+23CE
+export function neutralizeSentinel(text: string): string {
+  return text.indexOf(NL_SENTINEL) >= 0
+    ? text.split(NL_SENTINEL).join(NL_SENTINEL_LITERAL)
+    : text;
+}
+
 /** colorCycle palette: four dark ink-on-white hues for per-character boundary cues. */
 const GLYPH_PALETTE: [number, number, number][] = [
   [20, 20, 20],   // near-black
@@ -128,6 +146,68 @@ const GLYPH_PALETTE: [number, number, number][] = [
   [150, 20, 20],  // dark red
   [20, 110, 40],  // dark green
 ];
+
+/** colorByRole palette, indexed by slot-1. Only the boundary TAGS are tinted;
+ *  body content stays black. [<user> tags, <assistant> tags]. */
+export const ROLE_PALETTE: [number, number, number][] = [
+  [20, 120, 50],   // 1: <user> / </user> — green
+  [30, 70, 180],   // 2: <assistant> / </assistant> — blue
+];
+const ROLE_SLOT_USER = 1;
+const ROLE_SLOT_ASSISTANT = 2;
+
+/**
+ * Slot markers for the parallel "slot string" — the structure-through mechanism
+ * that replaces the old parse-back. A slot string is a width-preserving copy of
+ * the rendered text: every structural role-tag character is swapped for one of
+ * these control codes, and every other codepoint is copied verbatim. Because the
+ * markers are width-1 (exactly like the ASCII tag chars they stand in for), the
+ * existing reflow / wrapLines / paging transforms mutate the slot string in lock-
+ * step with the text — only whitespace/newlines move, and those are slot 0 in
+ * both. The renderer then reads role attribution BY POSITION instead of trying to
+ * re-find "<user>" in flattened text (which miscolors a body that literally quotes
+ * a tag). The structure is known at serialize time and carried, never guessed.
+ */
+export const SLOT_MARK_USER = String.fromCharCode(1);
+export const SLOT_MARK_ASSISTANT = String.fromCharCode(2);
+const SLOT_MARK_RE = new RegExp('[' + SLOT_MARK_USER + SLOT_MARK_ASSISTANT + ']', 'g');
+
+/** Map a slot-string codepoint to its color slot (0 = body / black ink). */
+function slotForMarkCp(cp: number | undefined): number {
+  if (cp === 0x0001) return ROLE_SLOT_USER;
+  if (cp === 0x0002) return ROLE_SLOT_ASSISTANT;
+  return 0;
+}
+
+/** Replacement for a literal slot-marker found in body content. Must (a) map to slot 0
+ *  like body (it's not 0x01/0x02), (b) share the markers' width class so wrapLines splits
+ *  the slot identically to the text, and (c) NOT be ' '/'\t' — minifyForRender strips
+ *  trailing spaces/tabs, which would shorten the slot line (where a body \x01 sat) but not
+ *  the text line (\x01 isn't stripped), desyncing the two and smearing role hues. A C0
+ *  control char satisfies all three. */
+const SLOT_NEUTRAL = '\u0003'; // U+0003 ETX — non-marker C0 control
+
+/** Width-preserving slot-0 copy of body text: identical codepoints (so wrap math is
+ *  unchanged) but with any literal slot-marker control char neutralized. These are rare in
+ *  real content but DO occur (e.g. binary-ish tool output that gets collapsed into history),
+ *  so the replacement is width- and strip-equivalent to the marker — never a space, which
+ *  the minifier would strip and misalign. Guarantees body can't forge a role hue. */
+export function slotCopyBody(body: string): string {
+  if (body.indexOf(SLOT_MARK_USER) < 0 && body.indexOf(SLOT_MARK_ASSISTANT) < 0) return body;
+  return body.replace(SLOT_MARK_RE, SLOT_NEUTRAL);
+}
+
+/** Build the slot-string segment for one role-wrapped turn, mirroring the text
+ *  form `<${tag}>\n${body}\n</${tag}>`: marker chars over the open/close tags,
+ *  a verbatim slot-0 copy of the body. `mark` is the role's slot marker. */
+export function roleSlotSegment(tag: string, body: string, mark: string, attr = ''): string {
+  // `attr` (e.g. ` t="37"`) is part of the OPEN tag, so the marker run must cover it too —
+  // the renderer colors by codepoint position, so a short marker run would un-tint the
+  // attribute and break alignment. Width is identical to the text tag by construction.
+  const open = `<${tag}${attr}>`;
+  const close = `</${tag}>`;
+  return `${mark.repeat(open.length)}\n${slotCopyBody(body)}\n${mark.repeat(close.length)}`;
+}
 
 /** Minify + tab-expand + join lines with ↵ sentinel. Returns null if text already
  *  contains ↵ (caller falls back to non-reflow path; vanishingly rare in practice). */
@@ -380,6 +460,8 @@ export async function renderChunkToPng(
   text: string,
   cols: number = DEFAULT_COLS,
   style: RenderStyle = {},
+  maxHeightPx: number = MAX_HEIGHT_PX,
+  slotText?: string,
 ): Promise<RenderedImage> {
   const useAA = style.aa === true;
   const atlasH = useAA ? ATLAS_GRAY_CELL_H : ATLAS_CELL_H;
@@ -388,9 +470,17 @@ export async function renderChunkToPng(
   const cellH = atlasH + Math.max(0, Math.floor(style.cellHBonus ?? DEFAULT_CELL_H_BONUS));
   const cellW = Math.max(1, atlasW + Math.floor(style.cellWBonus ?? DEFAULT_CELL_W_BONUS));
   const lines = wrapLines(text, cols, markerScale);
+  // Slot string carries role attribution by position. It is width-identical to
+  // `text`, so wrapLines splits it into the exact same rows — fitSlotLines[r] aligns
+  // codepoint-for-codepoint with fitLines[r]. Only built when coloring is on.
+  const slotLines: string[] | null =
+    style.colorByRole === true && slotText !== undefined
+      ? wrapLines(slotText, cols, markerScale)
+      : null;
 
-  const maxLines = Math.max(1, Math.floor((MAX_HEIGHT_PX - 2 * PAD_Y) / cellH));
+  const maxLines = Math.max(1, Math.floor((maxHeightPx - 2 * PAD_Y) / cellH));
   const fitLines = lines.slice(0, maxLines);
+  const fitSlotLines = slotLines ? slotLines.slice(0, maxLines) : null;
 
   // charsRendered = input codepoints covered by this image (for..of counts by codepoint, not code unit).
   let charsRendered: number;
@@ -417,10 +507,11 @@ export async function renderChunkToPng(
   // markerMask: 1 where ↵ glyph was inked; used to recolor those pixels red.
   const markerMask: Uint8Array | null =
     style.markerRed ? new Uint8Array(width * height) : null;
-  // colorMask: stores colorIndex+1 per inked pixel (0 = background) for colorCycle RGB output.
+  // colorMask: stores colorSlot per inked pixel (0 = background) for colorCycle / colorByRole RGB output.
   const useColorCycle = style.colorCycle === true;
+  const useColorByRole = style.colorByRole === true;
   const colorMask: Uint8Array | null =
-    useColorCycle ? new Uint8Array(width * height) : null;
+    (useColorCycle || useColorByRole) ? new Uint8Array(width * height) : null;
 
   let droppedChars = 0;
   const droppedCodepoints = new Map<number, number>();
@@ -429,13 +520,18 @@ export async function renderChunkToPng(
     const line = fitLines[row]!;
     const baseY = PAD_Y + row * cellH;
     let col = 0;
+    // Per-row slot codepoints, aligned 1:1 with `line` (same wrap, width-preserved).
+    const slotRow: string[] | null =
+      fitSlotLines ? Array.from(fitSlotLines[row] ?? '') : null;
+    let charIdx = 0;
     for (const ch of line) {
       if (col >= cols) break; // shouldn't happen — wrap prevents this
       const codepoint = ch.codePointAt(0)!;
       const baseX = PAD_X + col * cellW;
       const isMarker = codepoint === NL_SENTINEL_CP;
-      const colorIdx = glyphIndex % GLYPH_PALETTE.length;
-      const colorSlot = colorIdx + 1; // 0 reserved for background in colorMask
+      const colorSlot = useColorByRole
+        ? (slotRow ? slotForMarkCp(slotRow[charIdx]?.codePointAt(0)) : 0) // 0 = body (black); only tags carry a role hue
+        : (glyphIndex % GLYPH_PALETTE.length) + 1; // 0 reserved for background in colorMask
       let advance: number;
       if (isMarker && markerScale > 1) {
         advance = blitGlyphScaled(fb, markerMask, width, height, baseX, baseY, codepoint, markerScale);
@@ -483,6 +579,7 @@ export async function renderChunkToPng(
         }
       }
       glyphIndex++;
+      charIdx++;
       if (advance === 0) {
         droppedChars++;
         droppedCodepoints.set(codepoint, (droppedCodepoints.get(codepoint) ?? 0) + 1);
@@ -502,14 +599,15 @@ export async function renderChunkToPng(
 
   let png: Uint8Array;
   if (colorMask) {
-    // colorCycle: AA-blend each inked pixel onto white in its palette color. markerRed ignored.
+    // colorCycle / colorByRole: AA-blend each inked pixel onto white in its palette color. markerRed ignored.
+    const palette = useColorByRole ? ROLE_PALETTE : GLYPH_PALETTE;
     const rgb = new Uint8Array(width * height * 3);
     for (let i = 0; i < fb.length; i++) {
       const g = fb[i]!; // post-invert: 0 = ink, 255 = background
       const slot = colorMask[i]!;
       if (slot > 0) {
         const coverage = 255 - g; // pre-invert coverage
-        const [pr, pg, pb] = GLYPH_PALETTE[(slot - 1) % GLYPH_PALETTE.length]!;
+        const [pr, pg, pb] = palette[(slot - 1) % palette.length]!;
         // Alpha-blend: channel = 255 - coverage*(255-palette)/255
         rgb[i * 3]     = Math.round(255 - coverage * (255 - pr!) / 255);
         rgb[i * 3 + 1] = Math.round(255 - coverage * (255 - pg!) / 255);
@@ -559,19 +657,32 @@ export async function renderTextToPngsWithCharLimit(
   cols: number = DEFAULT_COLS,
   maxCharsPerImage: number = READABLE_CHARS_PER_IMAGE,
   style: RenderStyle = {},
+  maxHeightPx: number = MAX_HEIGHT_PX,
+  slotText?: string,
 ): Promise<RenderedImage[]> {
   const markerScale = Math.max(1, Math.floor(style.markerScale ?? 1));
   const cellH = ATLAS_CELL_H + Math.max(0, Math.floor(style.cellHBonus ?? DEFAULT_CELL_H_BONUS));
   const lines = wrapLines(text, cols, markerScale);
-  const hardLinesPerImg = Math.max(1, Math.floor((MAX_HEIGHT_PX - 2 * PAD_Y) / cellH));
+  // Width-identical slot rows align 1:1 with `lines`; pages are contiguous slices,
+  // so the same index range gives each page its slot half. Only built when coloring.
+  const slotLines: string[] | null =
+    style.colorByRole === true && slotText !== undefined
+      ? wrapLines(slotText, cols, markerScale)
+      : null;
+  const hardLinesPerImg = Math.max(1, Math.floor((maxHeightPx - 2 * PAD_Y) / cellH));
   // Dense pages (DENSE_CONTENT_CHARS_PER_IMAGE) fill the full 1932 px height;
   // the slab budget (READABLE_CHARS_PER_IMAGE) keeps its shorter row cap.
   const linesPerImg = Math.min(hardLinesPerImg, Math.max(1, Math.floor(maxCharsPerImage / cols)));
 
   const images: RenderedImage[] = [];
+  let slotCursor = 0;
   for (const page of splitWrappedLinesIntoReadablePages(lines, linesPerImg, maxCharsPerImage)) {
     const chunk = page.join('\n');
-    images.push(await renderChunkToPng(chunk, cols, style));
+    const slotChunk = slotLines
+      ? slotLines.slice(slotCursor, slotCursor + page.length).join('\n')
+      : undefined;
+    slotCursor += page.length;
+    images.push(await renderChunkToPng(chunk, cols, style, maxHeightPx, slotChunk));
   }
   return images;
 }
@@ -580,8 +691,10 @@ export async function renderTextToPngs(
   text: string,
   cols: number = DEFAULT_COLS,
   style: RenderStyle = {},
+  maxHeightPx: number = MAX_HEIGHT_PX,
+  slotText?: string,
 ): Promise<RenderedImage[]> {
-  return renderTextToPngsWithCharLimit(text, cols, READABLE_CHARS_PER_IMAGE, style);
+  return renderTextToPngsWithCharLimit(text, cols, READABLE_CHARS_PER_IMAGE, style, maxHeightPx, slotText);
 }
 
 // --- R2 multi-column rendering --------------------------------------------

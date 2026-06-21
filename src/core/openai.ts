@@ -12,9 +12,13 @@ import {
   shrinkColsToContent,
   PAD_X,
   CELL_W,
-  MAX_HEIGHT_PX,
   type RenderedImage,
 } from './render.js';
+import {
+  resolveGptProfile,
+  DEFAULT_GPT_STRIP_COLS,
+  type GptVisionCost,
+} from './gpt-model-profiles.js';
 import { bytesToBase64 } from './png.js';
 import {
   compactSlabWhitespace,
@@ -31,38 +35,29 @@ import {
   type GptCollapsePlan,
   type GptHistoryOptions,
 } from './openai-history.js';
+import { HISTORY_SYNTHETIC_INTRO, HISTORY_SYNTHETIC_OUTRO } from './history.js';
 import { countTokens as o200kCountTokens } from 'gpt-tokenizer/encoding/o200k_base';
 
-// 768px-wide portrait strip. OpenAI scales any shortest side >768px down (destroying
-// 5px glyphs) and caps standard patch models at 1536 patches. 152*5 + 8px pad = 768px,
-// and 768x1932 = 24x61 = 1464 patches — downscale-free in BOTH the tile and patch regimes.
-const GPT_STRIP_COLS = 152;
-
-// ---- OpenAI vision-token cost (mirrors the API's mandatory pre-tokenize resize) ----
-// Tile models (gpt-5, gpt-4o/4.1/4.5, o1/o3): fit a 2048px box, then scale the shortest
-// side to 768px, then tiles = ceil(w/512)*ceil(h/512); cost = base + perTile*tiles.
-// Patch models (gpt-5.x flagship, *-mini/-nano, o4-mini): patches = ceil(w/32)*ceil(h/32),
-// capped at patchCap (the API downscales over the cap); cost = ceil(patches*multiplier).
-// Numbers: OpenAI published image-token docs (2026-06). Unpublished multipliers default to
-// 1.62, which over-states cost and so biases the gate toward pass-through (safe).
-type VisionCost =
-  | { regime: 'tile'; base: number; perTile: number }
-  | { regime: 'patch'; multiplier: number; patchCap: number };
+// Per-model GPT rendering + vision-cost profiles (portrait-strip width, image-token
+// cost model, max image height) live in ./gpt-model-profiles.ts so a new model is a
+// one-line / one-env-var retune. resolveVisionCost stays a thin wrapper so every caller
+// (gate, slab, history, dashboard) shares the single source of truth.
+type VisionCost = GptVisionCost;
 
 export function resolveVisionCost(model: string): VisionCost {
-  const m = model.toLowerCase();
-  if (/^(?:gpt-5(?:\.\d+)?|gpt-4\.1)-(?:mini|nano)/.test(m) || /^o4-mini/.test(m)) {
-    return { regime: 'patch', multiplier: /nano/.test(m) ? 2.46 : 1.62, patchCap: 1536 };
-  }
-  // 5.x flagship (gpt-5.4/5.5/5.6, no -mini/-nano): patch model with NO multiplier
-  // (=1.0; the 1.62/2.46 values are mini/nano only) and the `detail:original`
-  // budget of 10,000 patches / 6000px. pxpipe sends detail:original, so the cap is
-  // 10,000 — NOT `high`'s 2,500, which would downscale dense text into illegibility.
-  if (/^gpt-5\.\d/.test(m)) return { regime: 'patch', multiplier: 1, patchCap: 10000 };
-  if (/^gpt-5/.test(m)) return { regime: 'tile', base: 70, perTile: 140 };                // gpt-5 / chat-latest
-  if (/^o[13]/.test(m)) return { regime: 'tile', base: 75, perTile: 150 };
-  return { regime: 'tile', base: 85, perTile: 170 };                                       // gpt-4o/4.1/4.5 + default
+  return resolveGptProfile(model).vision;
 }
+
+// Sharp framing around the collapsed-history image. The transcript flattens BOTH
+// roles into one role:'user' message (the API forbids images inside role:'assistant'),
+// so this text must (a) tell the model to attribute strictly by the <user>/<assistant>
+// tags rendered inside the image and (b) make explicit this is PAST context, not the
+// live request — otherwise the model summarizes the transcript instead of answering.
+// Aliases of the SINGLE SOURCE OF TRUTH in history.ts (see its doc comment). Importing
+// rather than re-declaring guarantees the GPT and Anthropic paths can never silently drift
+// on the turn-attribution wording — the exact divergence history.ts warns about.
+export const HISTORY_TRANSCRIPT_INTRO = HISTORY_SYNTHETIC_INTRO;
+export const HISTORY_TRANSCRIPT_OUTRO = HISTORY_SYNTHETIC_OUTRO;
 
 export function openAIVisionTokens(model: string, w: number, h: number): number {
   const c = resolveVisionCost(model);
@@ -174,7 +169,7 @@ const DEFAULTS: OpenAIResolvedOptions = {
   compressTools: true,
   compressSchemas: true,
   minCompressChars: 2000,
-  cols: GPT_STRIP_COLS,
+  cols: DEFAULT_GPT_STRIP_COLS,
   multiCol: 1,
   charsPerToken: 4, // conservative OpenAI default; override after telemetry
   reflow: true,
@@ -425,7 +420,7 @@ function evalOpenAIGate(
 ): { imageTokens: number; textTokens: number; profitable: boolean } {
   const stripW = 2 * PAD_X + cols * CELL_W;
   const estImages = estimateImageCount(renderedText, cols, 1);
-  const perStrip = openAIVisionTokens(model, stripW, MAX_HEIGHT_PX);
+  const perStrip = openAIVisionTokens(model, stripW, resolveGptProfile(model).maxHeightPx);
   const imageTokens = estImages * perStrip;
   const textTokens = renderedText.length / charsPerToken;
   return { imageTokens, textTokens, profitable: imageTokens < textTokens };
@@ -609,7 +604,7 @@ export async function transformOpenAIChatCompletions(
     : '';
   const header = CHAT_HEADER.replace('\n====', reflowNote + '\n====');
   const renderedText = header + combined;
-  const cols = Math.min(shrinkColsToContent(renderedText, o.cols), GPT_STRIP_COLS);
+  const cols = Math.min(shrinkColsToContent(renderedText, o.cols), resolveGptProfile(req.model).stripCols);
 
   const gate = evalOpenAIGate(req.model, renderedText, cols, o.charsPerToken);
   info.gateEval = {
@@ -626,7 +621,7 @@ export async function transformOpenAIChatCompletions(
     return { body, info };
   }
 
-  const images = await renderTextToPngs(renderedText, cols);
+  const images = await renderTextToPngs(renderedText, cols, {}, resolveGptProfile(req.model).maxHeightPx);
   if (images.length === 0) {
     info.reason = 'render_empty';
     return { body, info };
@@ -672,15 +667,20 @@ export async function transformOpenAIChatCompletions(
     const turns = chatMessagesToTurns(req.messages);
     const profitable = (text: string, cols: number) =>
       evalOpenAIGate(req.model, text, cols, o.charsPerToken).profitable;
-    const plan = await planGptCollapse(turns, firstUserIdx + 1, profitable, { ...o.gptHistory, reflow: o.reflow });
+    const plan = await planGptCollapse(turns, firstUserIdx + 1, profitable, {
+      ...o.gptHistory,
+      reflow: o.reflow,
+      cols: o.gptHistory?.cols ?? resolveGptProfile(req.model).stripCols,
+      maxHeightPx: o.gptHistory?.maxHeightPx ?? resolveGptProfile(req.model).maxHeightPx,
+    });
     foldGptHistory(info, req.model, plan);
     if (plan.images.length > 0) {
       const synthetic: OpenAIChatMessage = {
         role: 'user',
         content: [
-          { type: 'text', text: '[Earlier in this conversation:]' },
+          { type: 'text', text: HISTORY_TRANSCRIPT_INTRO },
           ...plan.images.map(openAIImagePart),
-          { type: 'text', text: '[End of earlier context.]' },
+          { type: 'text', text: HISTORY_TRANSCRIPT_OUTRO },
         ],
       };
       req.messages = [
@@ -787,7 +787,7 @@ export async function transformOpenAIResponses(
     : '';
   const header = RESPONSES_HEADER.replace('\n====', reflowNote + '\n====');
   const renderedText = header + combined;
-  const cols = Math.min(shrinkColsToContent(renderedText, o.cols), GPT_STRIP_COLS);
+  const cols = Math.min(shrinkColsToContent(renderedText, o.cols), resolveGptProfile(req.model).stripCols);
 
   const gate = evalOpenAIGate(req.model, renderedText, cols, o.charsPerToken);
   info.gateEval = {
@@ -804,7 +804,7 @@ export async function transformOpenAIResponses(
     return { body, info };
   }
 
-  const images = await renderTextToPngs(renderedText, cols);
+  const images = await renderTextToPngs(renderedText, cols, {}, resolveGptProfile(req.model).maxHeightPx);
   if (images.length === 0) {
     info.reason = 'render_empty';
     return { body, info };
@@ -875,15 +875,20 @@ export async function transformOpenAIResponses(
     const turns = responsesItemsToTurns(inputItems);
     const profitable = (text: string, cols: number) =>
       evalOpenAIGate(req.model, text, cols, o.charsPerToken).profitable;
-    const plan = await planGptCollapse(turns, firstUserIdx + 1, profitable, { ...o.gptHistory, reflow: o.reflow });
+    const plan = await planGptCollapse(turns, firstUserIdx + 1, profitable, {
+      ...o.gptHistory,
+      reflow: o.reflow,
+      cols: o.gptHistory?.cols ?? resolveGptProfile(req.model).stripCols,
+      maxHeightPx: o.gptHistory?.maxHeightPx ?? resolveGptProfile(req.model).maxHeightPx,
+    });
     foldGptHistory(info, req.model, plan);
     if (plan.images.length > 0) {
       const synthetic: ResponsesInputItem = {
         role: 'user',
         content: [
-          { type: 'input_text', text: '[Earlier in this conversation:]' },
+          { type: 'input_text', text: HISTORY_TRANSCRIPT_INTRO },
           ...plan.images.map(responsesImagePart),
-          { type: 'input_text', text: '[End of earlier context.]' },
+          { type: 'input_text', text: HISTORY_TRANSCRIPT_OUTRO },
         ],
       };
       req.input = [

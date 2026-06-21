@@ -207,11 +207,12 @@ describe('blocksToText', () => {
 });
 
 describe('messagesToHistoryText', () => {
-  it('frames each turn with --- role --- and joins with blank line', () => {
+  it('wraps each turn in <role> XML tags and joins with blank line', () => {
     const msgs: Message[] = [usr('hi'), asst('hello')];
     const out = messagesToHistoryText(msgs, 2);
-    expect(out).toContain('--- user ---\nhi');
-    expect(out).toContain('--- assistant ---\nhello');
+    // Each tag carries an absolute turn index (message position) so the model has a recency anchor.
+    expect(out).toContain('<user t="0">\nhi\n</user>');
+    expect(out).toContain('<assistant t="1">\nhello\n</assistant>');
   });
 
   it('respects upToExclusive (does not include the live tail)', () => {
@@ -229,9 +230,11 @@ describe('messagesToHistoryText', () => {
       usr('   \n   '), // whitespace-only
     ];
     const out = messagesToHistoryText(msgs, 3);
-    expect(out).toContain('--- assistant ---\nanswer');
-    // Only one section header should appear.
-    expect(out.match(/^---/gm)?.length).toBe(1);
+    // Index reflects absolute position: the empty user turn at index 0 is skipped,
+    // so the assistant turn keeps its real index (1) rather than being renumbered.
+    expect(out).toContain('<assistant t="1">\nanswer\n</assistant>');
+    // Only one role header should appear (empty user turns are skipped).
+    expect(out.match(/^<assistant /gm)?.length).toBe(1);
   });
 });
 
@@ -300,11 +303,10 @@ describe('collapseHistory', () => {
     expect(out[0]!.role).toBe('user');
     expect(Array.isArray(out[0]!.content)).toBe(true);
     const content = out[0]!.content as Array<Record<string, unknown>>;
-    expect(content[0]).toMatchObject({ type: 'text', text: '[Earlier in this conversation:]' });
-    expect(content[content.length - 1]).toMatchObject({
-      type: 'text',
-      text: '[End of earlier context.]',
-    });
+    expect(content[0]).toMatchObject({ type: 'text' });
+    expect((content[0] as { text: string }).text).toContain('attribute every turn strictly by its tag');
+    expect(content[content.length - 1]).toMatchObject({ type: 'text' });
+    expect((content[content.length - 1] as { text: string }).text).toContain('current request is the live text');
     // Middle blocks are image
     const imgBlocks = content.filter((c) => c.type === 'image');
     expect(imgBlocks.length).toBe(info.collapsedImages);
@@ -331,10 +333,10 @@ describe('collapseHistory', () => {
       Math.ceil(info.collapsedChars / DENSE_CONTENT_CHARS_PER_IMAGE),
     );
     const content = out[0]!.content as Array<Record<string, unknown>>;
-    expect(content.filter((c) => c.type === 'text')).toEqual([
-      { type: 'text', text: '[Earlier in this conversation:]' },
-      { type: 'text', text: '[End of earlier context.]' },
-    ]);
+    const textBlocks = content.filter((c) => c.type === 'text');
+    expect(textBlocks).toHaveLength(2);
+    expect((textBlocks[0] as { text: string }).text).toContain('attribute every turn strictly by its tag');
+    expect((textBlocks[1] as { text: string }).text).toContain('current request is the live text');
     expect(content.filter((c) => c.type === 'image')).toHaveLength(info.collapsedImages);
   });
 
@@ -559,11 +561,10 @@ describe('transformRequest history compression (always-on)', () => {
     expect(reparsed.messages[1].role).toBe('user');
     const content = reparsed.messages[1].content;
     expect(Array.isArray(content)).toBe(true);
-    expect(content[0]).toMatchObject({ type: 'text', text: '[Earlier in this conversation:]' });
-    expect(content[content.length - 1]).toMatchObject({
-      type: 'text',
-      text: '[End of earlier context.]',
-    });
+    expect(content[0]).toMatchObject({ type: 'text' });
+    expect((content[0] as { text: string }).text).toContain('attribute every turn strictly by its tag');
+    expect(content[content.length - 1]).toMatchObject({ type: 'text' });
+    expect((content[content.length - 1] as { text: string }).text).toContain('current request is the live text');
     const histImgs = content.filter((b: { type: string }) => b.type === 'image');
     expect(histImgs[histImgs.length - 1].cache_control).toBeDefined();
   });

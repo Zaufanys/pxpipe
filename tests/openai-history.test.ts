@@ -33,8 +33,8 @@ describe('responsesItemsToTurns', () => {
       { role: 'user', content: 'hello' },
       { role: 'assistant', content: [{ type: 'output_text', text: 'hi there' }] },
     ]);
-    expect(turns[0]!.text).toBe('--- user ---\nhello');
-    expect(turns[1]!.text).toBe('--- assistant ---\nhi there');
+    expect(turns[0]!.text).toBe('<user t="0">\nhello\n</user>');
+    expect(turns[1]!.text).toBe('<assistant t="1">\nhi there\n</assistant>');
     expect(turns.every((t) => !t.opaque)).toBe(true);
   });
 

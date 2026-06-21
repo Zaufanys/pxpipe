@@ -21,7 +21,7 @@
  * HistoryTurn list and the planner/renderer are shared.
  */
 
-import { renderTextToPngs, reflow, type RenderedImage } from './render.js';
+import { renderTextToPngs, reflow, neutralizeSentinel, MAX_HEIGHT_PX, type RenderedImage } from './render.js';
 import { countTokens as o200kCountTokens } from 'gpt-tokenizer/encoding/o200k_base';
 
 /** Portrait-strip width for GPT history images. Mirrors GPT_STRIP_COLS in
@@ -70,6 +70,9 @@ export interface GptHistoryOptions {
    *  each section renders to roughly one ≤6000px image, well under gpt-5.x's
    *  10,000-patch `detail:original` budget. Turn size, not turn count, drives this. */
   sectionTokens: number;
+  /** Max rendered image height in px (per-model; from the GPT profile). Threaded
+   *  into renderTextToPngs so history pages split at the same height the gate prices. */
+  maxHeightPx: number;
   /** Reflow the transcript before rendering: pack soft-wrapped lines and mark
    *  every hard newline with the ↵ sentinel — same treatment as the static
    *  slab. History text is newline-heavy (role headers, JSON args), so without
@@ -87,6 +90,7 @@ export const GPT_HISTORY_DEFAULTS: GptHistoryOptions = {
   collapseChunk: 10,
   freezeChunk: 10,
   sectionTokens: 2000,
+  maxHeightPx: MAX_HEIGHT_PX,
   reflow: true,
 };
 
@@ -214,7 +218,8 @@ export async function planGptCollapse(
   // (newline-heavy transcripts otherwise burn a full row per short line and
   // show no ↵). `text` itself stays original — it backs the o200k baseline and
   // the chunk-snapped cache byte-stability, so it must not change shape here.
-  const renderText = o.reflow ? reflow(text) ?? text : text;
+  const safeText = neutralizeSentinel(text);
+  const renderText = o.reflow ? reflow(safeText) ?? safeText : text;
   if (!isProfitable(renderText, o.cols)) {
     return { ...base, reason: 'not_profitable', collapsedChars: text.length };
   }
@@ -276,11 +281,12 @@ export async function planGptCollapse(
       .filter((str) => str && str.length > 0)
       .join('\n\n');
     if (!sectionText || sectionText.length === 0) continue;
-    const sectionRender = o.reflow ? reflow(sectionText) ?? sectionText : sectionText;
+    const safeSection = neutralizeSentinel(sectionText);
+    const sectionRender = o.reflow ? reflow(safeSection) ?? safeSection : sectionText;
     // Readable portrait strips (≤768px wide) — legible to OpenAI vision, same as
     // the static slab. renderTextToPngs caps each PNG at MAX_HEIGHT_PX so a tall
     // section pages into N images, all still well under the 10,000-patch budget.
-    const sectionImgs = await renderTextToPngs(sectionRender, o.cols);
+    const sectionImgs = await renderTextToPngs(sectionRender, o.cols, {}, o.maxHeightPx);
     for (const img of sectionImgs) imgs.push(img);
   }
   if (imgs.length === 0) {
@@ -339,7 +345,7 @@ function responsesContentToText(content: unknown): string {
   return parts.join('\n');
 }
 
-function responsesItemToTurn(item: unknown): HistoryTurn {
+function responsesItemToTurn(item: unknown, idx: number): HistoryTurn {
   const o = (item ?? {}) as Record<string, unknown>;
   const type = typeof o.type === 'string' ? o.type : undefined;
   if (type === 'reasoning') {
@@ -372,14 +378,18 @@ function responsesItemToTurn(item: unknown): HistoryTurn {
     const body = responsesContentToText(o.content);
     if (!body.trim()) return { text: '', openIds: [], closeIds: [], opaque: false };
     const tag = role === 'assistant' ? 'assistant' : role === 'user' ? 'user' : role;
-    return { text: `--- ${tag} ---\n${body}`, openIds: [], closeIds: [], opaque: false };
+    // Absolute turn index (item position) — recency anchor so the model can tell turn 1
+    // from turn 60 instead of resurfacing the salient opening turn. Stable per item →
+    // cache-safe (mirrors src/core/history.ts). Tool turns stay unindexed (not mistakable
+    // for a live request); the index rides the conversational role tags.
+    return { text: `<${tag} t="${idx}">\n${body}\n</${tag}>`, openIds: [], closeIds: [], opaque: false };
   }
   // Unknown item kind (e.g. item_reference) we can't safely serialize → barrier.
   return { text: '', openIds: [], closeIds: [], opaque: true };
 }
 
 export function responsesItemsToTurns(items: unknown[]): HistoryTurn[] {
-  return items.map(responsesItemToTurn);
+  return items.map((item, i) => responsesItemToTurn(item, i));
 }
 
 // ---- Chat Completions lowering ----------------------------------------------
@@ -401,7 +411,7 @@ function chatContentToText(content: unknown): string {
   return parts.join('\n');
 }
 
-function chatMessageToTurn(msg: unknown): HistoryTurn {
+function chatMessageToTurn(msg: unknown, idx: number): HistoryTurn {
   const o = (msg ?? {}) as Record<string, unknown>;
   const role = typeof o.role === 'string' ? o.role : '';
   const body = chatContentToText(o.content);
@@ -433,7 +443,7 @@ function chatMessageToTurn(msg: unknown): HistoryTurn {
     }
     const text = parts.join('\n');
     return {
-      text: text.trim() ? `--- assistant ---\n${text}` : '',
+      text: text.trim() ? `<assistant t="${idx}">\n${text}\n</assistant>` : '',
       openIds,
       closeIds: [],
       opaque: false,
@@ -441,9 +451,9 @@ function chatMessageToTurn(msg: unknown): HistoryTurn {
   }
   if (!body.trim()) return { text: '', openIds: [], closeIds: [], opaque: false };
   const tag = role === 'user' ? 'user' : role || 'user';
-  return { text: `--- ${tag} ---\n${body}`, openIds: [], closeIds: [], opaque: false };
+  return { text: `<${tag} t="${idx}">\n${body}\n</${tag}>`, openIds: [], closeIds: [], opaque: false };
 }
 
 export function chatMessagesToTurns(messages: unknown[]): HistoryTurn[] {
-  return messages.map(chatMessageToTurn);
+  return messages.map((msg, i) => chatMessageToTurn(msg, i));
 }

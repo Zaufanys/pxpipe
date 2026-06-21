@@ -393,7 +393,7 @@ describe('transformOpenAIResponses — history collapse', () => {
       return (
         Array.isArray(c) &&
         c.some((p) => (p as { type?: string }).type === 'input_image') &&
-        c.some((p) => (p as { text?: string }).text === '[Earlier in this conversation:]')
+        c.some((p) => (p as { text?: string }).text?.includes('attribute every turn strictly by its tag'))
       );
     });
     expect(historyItems).toHaveLength(1);
@@ -450,7 +450,7 @@ describe('transformOpenAIChatCompletions — history collapse', () => {
       return (
         Array.isArray(c) &&
         c.some((p) => (p as { type?: string }).type === 'image_url') &&
-        c.some((p) => (p as { text?: string }).text === '[Earlier in this conversation:]')
+        c.some((p) => (p as { text?: string }).text?.includes('attribute every turn strictly by its tag'))
       );
     });
     expect(historyMsgs).toHaveLength(1);
