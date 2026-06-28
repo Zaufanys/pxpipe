@@ -32,6 +32,7 @@ import type { TrackEvent } from './core/tracker.js';
 import {
   computeActualInputEff,
   computeBaselineInputEff,
+  deriveBaselineWarmth,
 } from './core/baseline.js';
 
 // ---- Types -----------------------------------------------------------------
@@ -175,13 +176,14 @@ export async function aggregateSessions(
     // paths), so we credit only the net-new uncached text pxpipe compressed
     // away — honest `baselineEff − actualEff`, NO >=0 floor, so a net-losing
     // turn (cc-heavy rewrite) lowers the total. Warmth decides whether the text
-    // counterfactual reads (0.10×) or re-creates (1.25×) the prefix, and it is
-    // grounded in the OBSERVED read: `cr > 0` means a warm cache actually served
-    // this turn (image and text share cache fate — pxpipe relocates the
-    // cache_control marker onto the image). A miss within the TTL window
-    // (`cr === 0`) was cold for both paths, so pricing text warm there would
-    // fabricate a phantom loss vs the imaged path. The wall-clock TTL is still
-    // required (a stale prefix can't be read), just no longer sufficient.
+    // counterfactual reads (0.10×) or re-creates (1.25×) the cacheable prefix:
+    // the text prefix's warmth tracks its OWN wall-clock stability (a fresh
+    // same-session prior within the TTL), decoupled from whether pxpipe busted
+    // its IMAGE cache this turn — so a cache-busted re-render (`cr === 0`) under
+    // a warm clock still reads warm for text, and we don't fabricate a 1.25×
+    // create it never would have paid. An observed read (`cr > 0`) is the other
+    // leg, rescuing post-restart turns with no in-memory prior. See
+    // deriveBaselineWarmth for the exact union.
     // Events missing either probe stay out of the rollup — no estimation.
     const inp = ev.input_tokens ?? 0;
     const cc = ev.cache_create_tokens ?? 0;
@@ -196,18 +198,12 @@ export async function aggregateSessions(
       const cacheable = ev.baseline_cacheable_tokens ?? 0;
       const tsSec = Date.parse(ev.ts) / 1000;
       const prev = warmth.get(id);
-      // cr-grounded warmth: only price text warm if a warm cache was actually
-      // observed (cr > 0). A miss within the TTL window was cold for both paths.
-      // cr-grounded warmth follows the OBSERVED read ALONE, not our in-memory map
-      // (a restart/eviction wipes it, and it can't see a session that was warm
-      // before this process booted). Mirrors dashboard.ts: pricing a cr>0 turn cold
-      // because the prior is missing would bill text the 1.25× create on a prefix we
-      // KNOW was cached — fabricating the inflated "saved" row. The map only refines
-      // the reused-vs-grown split; with no fresh prior, assume the cached prefix was
-      // fully reused (prevCacheable = cacheable → no fabricated growth).
-      const warm = cr > 0;
-      const warmFresh = prev !== undefined && tsSec - prev.ts < CACHE_TTL_SEC;
-      const prevCacheable = warm ? (warmFresh ? prev!.cacheable : cacheable) : 0;
+      // Warmth = honest union (mirrors dashboard.ts, centralised in
+      // deriveBaselineWarmth): warm iff a fresh same-session prior is within the
+      // TTL OR cr>0 witnesses a read. cr=0 no longer forces cold (the wall-clock
+      // leg keeps a cache-busted re-render warm), and cr>0 rescues the first
+      // post-restart turn that has no in-memory prior yet.
+      const { warm, prevCacheable } = deriveBaselineWarmth(prev, tsSec, cacheable, cr, CACHE_TTL_SEC);
       const baselineEff = computeBaselineInputEff(
         baseline,
         cacheable,

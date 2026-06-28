@@ -8,6 +8,70 @@
 export const CACHE_CREATE_RATE = 1.25;
 export const CACHE_READ_RATE = 0.1;
 
+/** Anthropic prompt-cache TTL (seconds). A turn within this window of the same
+ *  session's previous turn still finds its append-only text prefix cached. */
+export const CACHE_TTL_SEC = 300;
+
+/** This session's previous usage-bearing turn, for wall-clock warmth. */
+export interface BaselineWarmthPrev {
+  /** Wall-clock seconds of that turn. */
+  ts: number;
+  /** Cacheable-prefix tokens measured that turn (0 if the probe missed). */
+  cacheable: number;
+}
+
+/**
+ * Decide whether the TEXT counterfactual's prefix was warm this turn, and what
+ * prior prefix size to credit as reused.
+ *
+ * Warmth is the honest UNION of two independent witnesses that the text prefix
+ * was cached this turn — warm iff EITHER fires:
+ *
+ *   1. WALL CLOCK — a fresh same-session prior within `ttlSec`. The text prefix
+ *      is append-only and shares the session's prompt-cache TTL, so a recent
+ *      prior turn proves it is still cached even when pxpipe busted its OWN image
+ *      cache (cr === 0) by re-rendering the prefix in place this turn. This leg
+ *      is decoupled from the image's cache state; the old `cr > 0`-only rule
+ *      lacked it and mispriced cache-busted re-renders COLD, turning a real
+ *      re-imaging LOSS into a fabricated "saving".
+ *
+ *   2. OBSERVED READ — cr > 0 directly witnesses Anthropic serving a cached
+ *      prefix this turn. This rescues the first turn after a pxpipe restart /
+ *      SESSION_CAP eviction while the cache is still warm (no in-memory prior,
+ *      yet cr proves warmth). Without it that turn is priced COLD and fabricates
+ *      an inflated "saved" row — the operator's original reported bug.
+ *
+ * Crucially, cr === 0 does NOT force cold (leg 1 carries those turns); cr is only
+ * an ADDITIONAL sufficient witness, never a necessary one. That is the whole
+ * difference from the old rule. See docs/CACHING_AND_SAVINGS.md.
+ *
+ * @param prev       this session's previous usage-bearing turn, or undefined.
+ * @param nowSec     wall-clock seconds of the current turn (replay passes the
+ *                   persisted ts so it reproduces the live decision exactly).
+ * @param cacheable  this turn's cacheable-prefix tokens (the full-reuse credit
+ *                   when warm only via cr, since cr proves a read but not the split).
+ * @param cr         observed cache-read tokens this turn (the leg-2 witness).
+ * @param ttlSec     cache TTL window (defaults to CACHE_TTL_SEC).
+ */
+export function deriveBaselineWarmth(
+  prev: BaselineWarmthPrev | undefined,
+  nowSec: number,
+  cacheable: number,
+  cr: number,
+  ttlSec: number = CACHE_TTL_SEC,
+): { warm: boolean; prevCacheable: number } {
+  const age = prev !== undefined ? nowSec - prev.ts : Number.POSITIVE_INFINITY;
+  // Leg 1: a fresh same-session prior within the TTL (wall-clock warmth).
+  const freshPrior = prev !== undefined && age >= 0 && age < ttlSec;
+  // Leg 2: an observed read directly witnesses a warm cache. Union of the two.
+  const warm = freshPrior || cr > 0;
+  // Fresh prior → credit its real measured prefix as reused (the reused/grown
+  // split). Warm only via cr (no usable prior) → cr proves a read happened but
+  // not the split, so assume full reuse of this turn's cacheable prefix.
+  const prevCacheable = freshPrior ? prev!.cacheable : warm ? cacheable : 0;
+  return { warm, prevCacheable };
+}
+
 /**
  * Weighted input cost for the unproxied TEXT counterfactual (see docs/CACHING_AND_SAVINGS.md).
  *

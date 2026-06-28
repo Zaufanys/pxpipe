@@ -350,20 +350,23 @@ describe('GPT savings split', () => {
   });
 });
 
-describe('cr-grounded warmth (cold-miss is priced cold, never a phantom loss)', () => {
-  // The text counterfactual must be priced on the OBSERVED cache state, not a
-  // wall-clock guess. pxpipe images the cached prefix in place, so image and
-  // text share cache fate: if THIS request's cache_read === 0 the prefix was
-  // cold for the image, which means it was cold for the text too. Pricing the
-  // text baseline warm (cheap 0.1× read) on a turn we actually paid the cold
-  // 1.25× create rate fabricates a loss out of a real token win — that was the
-  // bug that dragged the hero % below every per-row %, and surfaced cold misses
-  // as a "-" in the Saved column. cr>0 is the only honest warmth signal.
+describe('union warmth: fresh wall-clock prior OR cr>0 (no phantom savings, no hidden losses)', () => {
+  // The text counterfactual's warmth is the honest UNION of two independent
+  // witnesses that the TEXT prefix was cached this turn: a fresh same-session
+  // prior within the TTL (wall clock), OR an observed read (cr>0). The text
+  // prefix is append-only, so a recent prior keeps it warm even when pxpipe
+  // busts its OWN image cache (cr=0) by re-rendering the prefix in place. On
+  // such a turn pxpipe really did pay the 1.25× create, so pricing the text
+  // baseline warm correctly SURFACES that re-imaging loss instead of hiding it
+  // behind a matching cold baseline — gating warmth on cr alone fabricated a
+  // win out of a real loss. (The cr>0 leg separately rescues the post-restart
+  // turn that has no in-memory prior yet but is provably cached on Anthropic's
+  // side.)
 
-  // A warm-priming turn followed by a cold cache MISS in the SAME session,
-  // within the warmth TTL. update() keys warmth off the wall clock, so two
-  // calls microseconds apart are "recent" — the old code would then price the
-  // miss warm. The fix gates warmth on cr>0, so the miss is priced cold.
+  // A warm-priming turn followed by a cache-busted re-render (cr=0) in the SAME
+  // session within the TTL. The fresh prior makes the text baseline warm, so
+  // the row reads the still-cached text prefix cheaply and honestly shows the
+  // re-imaging loss rather than a phantom saving.
   function antEvt(
     usage: {
       input_tokens: number;
@@ -392,7 +395,7 @@ describe('cr-grounded warmth (cold-miss is priced cold, never a phantom loss)', 
     };
   }
 
-  it('prices a cold cache miss cold even right after a warm turn', async () => {
+  it('surfaces the re-imaging loss on a cache-busted re-render within the TTL', async () => {
     // Turn 1: genuine warm read — primes the per-session warmth map.
     dash.update(
       antEvt(
@@ -406,14 +409,17 @@ describe('cr-grounded warmth (cold-miss is priced cold, never a phantom loss)', 
       ) as never,
     );
 
-    // Turn 2: cold MISS in the same session — cache_read === 0, full re-create.
+    // Turn 2: pxpipe busted its OWN image cache and re-rendered the prefix in
+    // place — cache_read === 0, full re-create. But the TEXT prefix is
+    // append-only and still cached (fresh same-session prior within the TTL),
+    // so the text counterfactual is warm.
     dash.update(
       antEvt(
         {
           input_tokens: 100,
           output_tokens: 50,
           cache_creation_input_tokens: 20000, // re-created the whole prefix
-          cache_read_input_tokens: 0, // ← the miss
+          cache_read_input_tokens: 0, // ← the image-cache miss
         },
         20000,
       ) as never,
@@ -422,20 +428,22 @@ describe('cr-grounded warmth (cold-miss is priced cold, never a phantom loss)', 
     const recent = (await dash.serveRecent().json()) as RecentPayload;
     const miss = recent.recent.at(-1)!;
 
-    // The miss really was cold — no warm prefix to read.
+    // pxpipe's image really did miss — it paid the cold create this turn.
     expect(miss.cache_read).toBe(0);
 
-    // actual = 100 + 20000×1.25 = 25100 (what we actually paid this turn).
+    // actual = 100 + 20000×1.25 = 25100 (what pxpipe actually paid this turn).
     expect(miss.actual_input).toBe(25100);
 
-    // Cold text counterfactual: re-create the whole 20000 prefix at 1.25× plus
-    // the 10000 cold tail = 35000. NOT the warm 0.1× read (which would be
-    // 20000×0.1 + 10000 = 12000 and fabricate a 13100-token *loss*).
-    expect(miss.baseline_input).toBe(35000);
+    // WARM text baseline: a text-only client would have READ its still-cached
+    // append-only prefix at 0.1× (20000×0.1) + 10000 cold tail = 12000 — NOT
+    // the cold 20000×1.25 + 10000 = 35000 the old cr-alone rule produced.
+    expect(miss.baseline_input).toBe(12000);
 
-    // Saved is therefore positive — imaging the cold prefix really did win.
-    expect(miss.session_saved_so_far_delta).toBe(9900);
-    expect(miss.session_saved_so_far_delta!).toBeGreaterThan(0);
+    // So this turn is an HONEST LOSS: pxpipe's re-imaging cost 13100 tokens more
+    // than a text-only client would have paid (12000 − 25100). The dashboard
+    // surfaces it — not floored, not hidden behind a matching cold baseline.
+    expect(miss.session_saved_so_far_delta).toBe(-13100);
+    expect(miss.session_saved_so_far_delta!).toBeLessThan(0);
   });
 
   it('still prices a genuine warm turn warm (cr>0 reads the prefix cheaply)', async () => {

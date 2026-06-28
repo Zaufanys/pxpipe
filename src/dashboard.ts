@@ -35,6 +35,7 @@ import type { TrackEvent } from './core/tracker.js';
 import {
   computeActualInputEff,
   computeBaselineInputEff,
+  deriveBaselineWarmth,
 } from './core/baseline.js';
 import {
   computeOpenAIActualInputEff,
@@ -582,6 +583,9 @@ export class DashboardState {
     let rawBaseline: number; // raw text-only counterfactual tokens
     let baselineForRow: number; // baseline token count for contextHistory/recent
     let cacheReadForRow: number; // tokens to surface in the "Cache hits" column
+    let warmForRow: boolean; // did the TEXT baseline read warm? (wall-clock for
+    // Anthropic; cached_tokens>0 for GPT) — drives the Context Map narration so
+    // the sub-line can't contradict baselineInputEff on a cache-busted turn.
 
     if (gpt) {
       // GPT cost model: no count_tokens probe, no cache-create premium, no
@@ -606,6 +610,8 @@ export class DashboardState {
       rawBaseline = e.rawBaseline;
       baselineForRow = e.rawBaseline;
       cacheReadForRow = u?.cached_tokens ?? 0;
+      // GPT's prefix discount is automatic: cached_tokens>0 ⇒ it read warm.
+      warmForRow = (u?.cached_tokens ?? 0) > 0;
     } else {
       haveUsage = u !== undefined && (inp > 0 || out > 0 || cc > 0 || cr > 0);
       const baseline = info?.baselineTokens;
@@ -652,26 +658,22 @@ export class DashboardState {
         typeof sidNow === 'string' && sidNow.length > 0
           ? this.baselineWarmth.get(sidNow)
           : undefined;
-      // Observed cache state is ground truth. pxpipe moves the caller's
-      // cache_control marker onto the image (it never adds its own — see
-      // transform.ts), so the imaged prefix occupies the SAME cached position
-      // the text would: image and text share cache fate. cache_read>0 means a
-      // warm cache existed (text would have read it too); cache_read===0 means
-      // it was cold for BOTH paths. Pricing the text counterfactual warm on a
-      // cr=0 turn invents a discount we never observed and turns genuine token
-      // wins (image < text at the same cold create rate) into phantom losses.
-      // So warmth follows the OBSERVED read ALONE — not our in-memory warmth
-      // map, which a restart/eviction wipes and which can't see a session that
-      // was already warm before this process booted. (A cr>0 turn priced cold
-      // because warmthPrev was missing would bill text the 1.25× create on a
-      // prefix we KNOW was cached — fabricating the inflated "99% saved" row.)
-      // The map only refines the reused-vs-grown split; with no fresh prior we
-      // assume the cached prefix was fully reused (prevCacheable = cacheable →
-      // no fabricated growth) rather than mispricing a known-warm read.
-      const warm = cr > 0;
-      const warmFresh =
-        warmthPrev !== undefined && nowSec - warmthPrev.ts < DashboardState.CACHE_TTL_SEC;
-      const prevCacheable = warm ? (warmFresh ? warmthPrev!.cacheable : cacheable) : 0;
+      // Warmth = honest UNION of two witnesses the TEXT prefix was cached: a
+      // fresh same-session prior within the TTL (wall clock) OR cr>0 (an observed
+      // read). The text prefix is append-only, so a fresh prior keeps it warm
+      // even when pxpipe busts its OWN image cache on a cr=0 re-render (the case
+      // the old cr-alone rule mispriced cold, fabricating savings); and cr>0
+      // rescues the first post-restart turn that has no in-memory prior yet (the
+      // case cr-alone got right but wall-clock-alone would misprice cold,
+      // fabricating the inflated "saved" row). Centralised in deriveBaselineWarmth
+      // so update()/replay()/sessions can't drift apart. See docs.
+      const { warm, prevCacheable } = deriveBaselineWarmth(
+        warmthPrev,
+        nowSec,
+        cacheable,
+        cr,
+        DashboardState.CACHE_TTL_SEC,
+      );
       baselineInputEff = creditSaving
         ? computeBaselineInputEff(
             baseline as number,
@@ -709,6 +711,7 @@ export class DashboardState {
       rawBaseline = baseline ?? 0;
       baselineForRow = baseline ?? 0;
       cacheReadForRow = cr;
+      warmForRow = warm; // union: fresh wall-clock prior OR cr>0 (see deriveBaselineWarmth)
     }
 
     // Record the request's transform breakdown for the Context Map panel. This
@@ -727,6 +730,8 @@ export class DashboardState {
         baselineInputEff,
         actualInputEff,
         haveBaseline,
+        cacheRead: cacheReadForRow,
+        warm: warmForRow,
         output: out,
         imageCount: info.imageCount ?? 0,
         buckets: { ...(info.bucketChars ?? {}) },
@@ -921,6 +926,7 @@ export class DashboardState {
       let rawBaseline: number;
       let baselineForRow: number;
       let cacheReadForRow: number;
+      let warmForRow: boolean; // text-baseline warmth for the Context Map narration
 
       if (gpt) {
         const e = gptEff({
@@ -942,6 +948,7 @@ export class DashboardState {
         rawBaseline = e.rawBaseline;
         baselineForRow = e.rawBaseline;
         cacheReadForRow = (t as { cached_tokens?: number }).cached_tokens ?? 0;
+        warmForRow = ((t as { cached_tokens?: number }).cached_tokens ?? 0) > 0;
       } else {
         haveUsage = inp > 0 || out > 0 || cc > 0 || cr > 0;
         const baseline = (t as { baseline_tokens?: number }).baseline_tokens;
@@ -964,15 +971,17 @@ export class DashboardState {
         const tsSec = Date.parse(t.ts) / 1000;
         const warmthPrevR =
           typeof sidR === 'string' && sidR.length > 0 ? this.baselineWarmth.get(sidR) : undefined;
-        // Same cr-grounded warmth as update() — see the note there. cr>0 ⇒ the
-        // imaged prefix read a warm cache, so the text counterfactual would have
-        // too; cr===0 ⇒ cold for both, price text cold (never warm-vs-cold). The
-        // persisted-ts map only refines the reused-vs-grown split; with no fresh
-        // prior we assume full reuse rather than mispricing a known-warm read.
-        const warmR = cr > 0;
-        const warmFreshR =
-          warmthPrevR !== undefined && tsSec - warmthPrevR.ts < DashboardState.CACHE_TTL_SEC;
-        const prevCacheableR = warmR ? (warmFreshR ? warmthPrevR!.cacheable : cacheable) : 0;
+        // Same union warmth as update() (persisted ts instead of the live clock
+        // so replay reproduces live numbers exactly): fresh wall-clock prior OR
+        // cr>0. A cache-busted re-render within the TTL stays warm via the prior;
+        // a post-restart turn stays warm via cr. See deriveBaselineWarmth.
+        const { warm: warmR, prevCacheable: prevCacheableR } = deriveBaselineWarmth(
+          warmthPrevR,
+          tsSec,
+          cacheable,
+          cr,
+          DashboardState.CACHE_TTL_SEC,
+        );
         baselineInputEff = creditSaving
           ? computeBaselineInputEff(
               baseline as number,
@@ -998,6 +1007,7 @@ export class DashboardState {
         rawBaseline = baseline ?? 0;
         baselineForRow = baseline ?? 0;
         cacheReadForRow = cr;
+        warmForRow = warmR; // wall-clock text warmth, NOT cr
       }
       // Rebuild the Context Map breakdown so old rows keep their "Saved" value
       // and "Details" link after a restart. The PNG ring is in-memory and gone,
@@ -1015,6 +1025,8 @@ export class DashboardState {
           baselineInputEff,
           actualInputEff,
           haveBaseline,
+          cacheRead: cacheReadForRow,
+          warm: warmForRow,
           output: out,
           imageCount,
           buckets: { ...((t as { bucket_chars?: Record<string, number> }).bucket_chars ?? {}) },

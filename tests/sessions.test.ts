@@ -215,16 +215,20 @@ describe('aggregateSessions', () => {
     expect(s.charsSaved).toBe(-6_775 * 4);
   });
 
-  it('prices a cold MISS within the TTL window as cold, not warm (cr-grounded)', async () => {
-    // Two turns 60s apart — well inside the 300s TTL. The wall clock ALONE would
-    // call turn 2 "warm" and hand it a phantom 0.1x prefix read. But turn 2's
-    // cache_read_tokens === 0: the prefix was NOT actually served warm (a cold
-    // miss / re-create within the window). If the image was cold, the text was
-    // cold too — they share one cache slot. cr-grounded warmth prices it COLD.
+  it('prices a busted image re-render within the TTL as a real loss (text stays warm)', async () => {
+    // Two turns 60s apart — well inside the 300s TTL. Turn 2's cache_read_tokens
+    // === 0: pxpipe's IMAGE cache missed and it re-created the prefix (cc>0).
+    // But the text counterfactual's prefix is APPEND-ONLY — turn 1 cached it and
+    // it is still warm 60s later regardless of what pxpipe's images did. So the
+    // honest price is WARM for text: this turn pxpipe genuinely LOST tokens by
+    // busting an image cache that text would have read for free. cr ALONE (the
+    // old rule) called turn 2 cold and fabricated a 31250 "win" it never earned.
+    // Empirically 12.8% of warm turns hit this cr=0 / text-warm shape — see
+    // docs/CACHING_AND_SAVINGS.md.
     writeEvents(tmp, [
-      // Turn 1 (cold first turn) — establishes a 28k cacheable prefix, imaged to 3k.
+      // Turn 1 (genuine cold first turn) — establishes a 28k cacheable prefix.
       //   cold baseline = 28000*1.25 + 2000 tail = 37000 ; actual = 2000 + 3000*1.25 = 5750
-      //   saved = 31250. (Also seeds warmth: prevCacheable=28000.)
+      //   saved = 31250. (Also seeds warmth: ts + prevCacheable=28000.)
       ev({
         first_user_sha8: 'cccccccc',
         ts: '2026-05-19T00:00:00.000Z',
@@ -235,10 +239,11 @@ describe('aggregateSessions', () => {
         cache_create_tokens: 3_000,
         cache_read_tokens: 0,
       }),
-      // Turn 2, +60s (inside TTL) but cache_read_tokens=0 — a cold MISS.
-      //   COLD (correct): baseline = 28000*1.25 + 2000 = 37000 ; actual = 5750 ; saved = 31250.
-      //   WARM (old wall-clock bug): reused 28000@0.1 = 2800 + 2000 tail = 4800 ;
-      //     saved = 4800 - 5750 = -950 — a fabricated loss on a real cold win.
+      // Turn 2, +60s (inside TTL), cache_read_tokens=0 — pxpipe re-rendered and
+      // its image cache missed. Text was still warm (append-only prefix, 60s old):
+      //   WARM (correct): reused 28000@0.1 = 2800 + 2000 tail = 4800 ; actual = 5750 ;
+      //     saved = 4800 - 5750 = -950 — the real cost of busting a warm image cache.
+      //   COLD (old cr-alone bug): baseline = 28000*1.25 + 2000 = 37000 ; saved = 31250 fabricated.
       ev({
         first_user_sha8: 'cccccccc',
         ts: '2026-05-19T00:01:00.000Z',
@@ -252,9 +257,9 @@ describe('aggregateSessions', () => {
     ]);
     const { sessions } = await aggregateSessions(tmp);
     const s = sessions.get('cccccccc')!;
-    // 31250 + 31250 — both turns are honest cold wins. The old wall-clock code
-    // booked the second as -950 (total would have been 30300).
-    expect(s.tokensSavedEst).toBe(62_500);
+    // 31250 (honest cold win) + (-950) (honest busted-rerender loss) = 30300.
+    // The old cr-alone code booked the second turn as +31250 → a 62500 overclaim.
+    expect(s.tokensSavedEst).toBe(30_300);
   });
 });
 

@@ -348,6 +348,14 @@ export interface ContextMapData {
   baselineInputEff: number; // cache-WEIGHTED baseline — what text would actually be billed
   actualInputEff: number; // cache-WEIGHTED actual — what the images were actually billed
   haveBaseline: boolean; // weighted pair is trustworthy (baseline probe resolved)
+  cacheRead: number; // the IMAGE request's cache_read tokens this turn. >0 ⇒ the
+  // image hit cache; ===0 ⇒ a cold or cache-busted image render. Used ONLY to
+  // explain the image side of the gap — it does NOT decide text warmth.
+  warm: boolean; // did the TEXT baseline's prefix read warm? A wall-clock decision
+  // (same session within the cache TTL), decoupled from the image cache state —
+  // see deriveBaselineWarmth / src/core/baseline.ts. Drives the narration so the
+  // sub-line can't contradict baselineInputEff on a cache-busted turn (text warm
+  // at 0.1× while the image was re-created cold).
   output: number;
   imageCount: number;
   buckets: Partial<Record<string, number>>; // bucket → chars rendered to PNG
@@ -413,19 +421,42 @@ export function renderContextMapFragment(
       ? `<div class="pages-title">${c.imageCount} image page${c.imageCount === 1 ? '' : 's'} were sent — thumbnails expired when the proxy restarted. The breakdown above is reconstructed from the saved log.</div>`
       : '';
 
+  // Did the TEXT baseline's prefix read warm this turn? This is a WALL-CLOCK
+  // decision (same session within the cache TTL), decoupled from the image
+  // request's cache state — see deriveBaselineWarmth / src/core/baseline.ts.
+  // Keying the narration on c.warm (NOT raw cache_read) is what keeps this
+  // sub-line consistent with baselineInputEff on a cache-busted turn, where the
+  // text prefix is warm (0.1× read) yet the image was re-created cold.
+  const warm = showCompare && c.warm;
+  // Cache-busted re-render: the text counterfactual stayed warm but pxpipe
+  // re-imaged the prefix and missed the image cache (cache_read===0), so the
+  // image paid the 1.25× create rate. This is why a physically-smaller prefix
+  // can still cost MORE as images than it would have as cached text.
+  const imageBusted = warm && c.cacheRead === 0;
+  const textNoun = warm ? 'cached text' : 'text';
+  // Raw count_tokens can grow (imaging bloated a short prompt), so say so rather
+  // than rendering a nonsensical "shrank -36%".
+  const rawPhrase =
+    rawShrink >= 0 ? `Raw content shrank ${rawShrink}%.` : `Raw content grew ${-rawShrink}%.`;
   const headline = !showCompare
     ? `<strong>${kFmt(c.actualInputEff || c.realInput)}</strong> billed tokens sent`
     : pct >= 0
-      ? `<span class="ctx-big">${pct}%</span> smaller — <strong>${kFmt(base)}</strong> billed tokens as cached text became <strong>${kFmt(real)}</strong> billed tokens as images`
-      : `<span class="ctx-big">${-pct}%</span> bigger — imaging cost <strong>${kFmt(real)}</strong> billed tokens vs <strong>${kFmt(base)}</strong> if kept as cached text`;
-  // Clarifying sub-line: tells the user the headline counts cache discounts, and
-  // explains the confusing case where the picture is physically smaller yet costs
-  // more — because the text it replaced would have been a near-free cache-read.
+      ? `<span class="ctx-big">${pct}%</span> smaller — <strong>${kFmt(base)}</strong> billed tokens as ${textNoun} became <strong>${kFmt(real)}</strong> billed tokens as images`
+      : `<span class="ctx-big">${-pct}%</span> bigger — imaging cost <strong>${kFmt(real)}</strong> billed tokens vs <strong>${kFmt(base)}</strong> if kept as ${textNoun}`;
+  // Clarifying sub-line. It must match the turn's real cache state: claiming a
+  // 0.1× read discount on a cold turn (where the prefix actually paid the 1.25×
+  // create rate) — or, conversely, denying the text its warm read on a turn
+  // where pxpipe merely busted its OWN image cache — is exactly the kind of
+  // contradiction this panel exists to kill.
   const subnote = !showCompare
     ? 'Billed tokens count cache discounts (reads at 0.1×) — no trustworthy text baseline for this request yet.'
-    : pct < 0 && rawShrink > 0
-      ? `Billed = after cache discounts (reads at 0.1×), same basis as the Saved column. The raw text is ${rawShrink}% smaller, but most of it would have been a cheap cache-read — so imaging it cost more.`
-      : `Billed = after cache discounts (reads at 0.1×), same basis as the Saved column. Raw content shrank ${rawShrink}%.`;
+    : !warm
+      ? `No warm text cache this turn — the text counterfactual's prefix is priced at the 1.25× create rate (the same event the imaged path pays), identical basis to the Saved column. The gap is purely token count. ${rawPhrase}`
+      : imageBusted
+        ? `The text counterfactual stays cached — its append-only prefix reads at 0.1× (same session, within the cache TTL) — but pxpipe re-imaged the prefix and missed the image cache this turn (cache_read = 0), paying the 1.25× create rate. So imaging cost more even though the text would have read warm. Same basis as the Saved column. ${rawPhrase}`
+        : pct < 0 && rawShrink > 0
+          ? `Billed = after cache discounts (reads at 0.1×), same basis as the Saved column. The raw text is ${rawShrink}% smaller, but most of it would have been a cheap cache-read — so imaging it cost more.`
+          : `Billed = after cache discounts (reads at 0.1×), same basis as the Saved column. ${rawPhrase}`;
   const title = isLatest ? 'Latest request' : 'Selected request';
 
   return (
