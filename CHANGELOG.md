@@ -4,6 +4,45 @@ All notable changes to pxpipe are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features /
 behavioral changes, patch = fixes).
 
+## 0.7.0 — 2026-07-03
+
+### Added
+- **Per-request telemetry: `stop_reason` + safety-flag logging.** Every proxied
+  request now records how it ended, so refusal/classifier trips are measurable
+  instead of anecdotal.
+- **Headless bench:** multi-turn `claude -p` driver + `events.jsonl` scorer for
+  fast, non-interactive A/B runs; plus a constant-cost render-style eval harness.
+- **`PXPIPE_DUMP_DIR`** persists rendered PNGs per request for demo/debug
+  inspection of exactly what the model saw.
+- **Dashboard/factsheet:** one-time cache-create losses tagged in the recent
+  table; factsheet carries occurrence counts with ticket-style codes.
+- **Demos:** `claude-sonnet-5` arm support; fable arm runs `claude-fable-5[1m]`
+  (1M ctx) to match opus/sonnet.
+
+### Fixed
+- **Imaged slab frozen at first render.** Volatile content (skill listings, cwd
+  caches) stays out of the imaged prefix so turn-2 system sha matches turn-1 —
+  no more silent cache-create churn between turns.
+- **Volatile env text relocated behind all cache breakpoints** (not just the
+  first), plus cross-session slab stability.
+- **Refusal-classifier defusing:** provenance-framed slab banner and reworded
+  tool-docs stub/header — eliminates spurious `reasoning_extraction` refusals
+  on compressed context.
+- **Render fit to 1568×728 (~1.15 MP)** on the Anthropic path for WYSIWYG
+  glyphs (what we rasterize is what the model samples).
+- Demo cost-ab arms run `--no-chrome` for reproducible token baselines.
+
+### Removed
+- `compressSchemas` knob (superseded by slab stability work).
+
+### Docs
+- **Fable 5 side-by-side demo** in the README with verified numbers from the
+  recording — same two tasks, same answers: plain $42.21 / 96% context vs
+  pxpipe $4.51 — plus the honest caveat (compressed arm needed one nudge for
+  single-reply format) and the full attempt log in
+  `demo/effective-context/ATTEMPTS.md`.
+- Node transform hook documented as kill-switch only.
+
 ## 0.6.10 — 2026-06-30
 
 ### Fixed
