@@ -511,6 +511,9 @@ export interface TransformInfo {
   staticChars: number;
   /** Length of the dynamic (per-turn) slab kept as plain text. */
   dynamicChars: number;
+  /** Chars of volatile env/context text relocated from system to the tail of
+   *  the last user message (absent when kept in system fallback). */
+  envRelocatedChars?: number;
   dynamicBlockCount: number;
   /** Tag-shaped blocks in the static slab not in DYNAMIC_BLOCK_TAGS.
    *  Canary: a new per-turn Claude Code tag would appear here before cache rate collapses. */
@@ -1628,21 +1631,33 @@ export async function transformRequest(
     info.imageSourceText = combinedWithHeader.slice(0, 65_536);
   }
 
-  // 4. Splice images back into the request. OCR framing is baked into the image;
-  //    tail text ("[End of rendered context.] + dynamic + billing") sits after.
-  const tailParts: string[] = ['[End of rendered context.]'];
-  if (dynamicText) tailParts.push(dynamicText);
-  if (billingLine) tailParts.push(billingLine);
-  const tailText = tailParts.join('\n\n');
+  // 4. Splice images back into the request. OCR framing is baked into the image.
+  //
+  // Volatile env/context text (git status, cwd, date) must NOT ride in
+  // req.system: Anthropic's cache prefix order is tools → system → messages,
+  // so system bytes sit BEFORE the slab anchor and any git-state change
+  // cold-restarted the whole anchored prefix (48.8% of cold-create waste,
+  // events.jsonl 2026-06-26..07-02). It is carried instead at the END of the
+  // last user message — the per-turn live tail that re-caches incrementally
+  // anyway — appended late in this function, AFTER history collapse, so it can
+  // never be baked into a frozen history chunk. Fallback: if no user message
+  // exists to carry it, keep it in system rather than drop content.
+  const hasUserMsg = (req.messages ?? []).some((m) => m.role === 'user');
+  const volatileEnvParts: string[] = [];
+  if (dynamicText) volatileEnvParts.push(dynamicText);
+  if (envMarkdown) volatileEnvParts.push(envMarkdown);
+  const volatileEnvText = hasUserMsg ? volatileEnvParts.join('\n\n') : '';
 
   // Images go into first user message — system field rejects images (400 system.N.type).
   {
     const sysTail: SystemField = [];
+    // billingLine is session-stable (warm reads through the anchored prefix
+    // confirm it; a per-turn value here would zero every cache read).
     if (billingLine) sysTail.push({ type: 'text', text: billingLine });
-    if (dynamicText) sysTail.push({ type: 'text', text: dynamicText });
-    // Volatile env section rides after the cache anchor as plain text — the
-    // model still sees it; the cached slab image no longer depends on it.
-    if (envMarkdown) sysTail.push({ type: 'text', text: envMarkdown });
+    if (!hasUserMsg) {
+      if (dynamicText) sysTail.push({ type: 'text', text: dynamicText });
+      if (envMarkdown) sysTail.push({ type: 'text', text: envMarkdown });
+    }
     if (Array.isArray(sysRemainder)) sysTail.push(...sysRemainder);
     // Tool Reference now rides INSIDE the imaged slab (combinedRaw above) — no
     // text splice here. Stubbed tools[] descriptions cite the "## Tool: <name>"
@@ -1959,6 +1974,26 @@ export async function transformRequest(
       }
     } else if (histInfo.reason) {
       info.historyReason = histInfo.reason;
+    }
+  }
+
+  // Volatile env/context text lands at the END of the last user message (see
+  // the block above image splice for why). Runs AFTER history collapse so the
+  // env bytes stay in the live tail — never imaged into a frozen chunk — and
+  // AFTER 5b so they are never run through tool_result compression. Note
+  // tool_result blocks legally precede trailing text blocks in a user message
+  // (Claude Code appends its own system-reminders the same way).
+  if (volatileEnvText) {
+    const msgs = req.messages ?? [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]!;
+      if (m.role !== 'user') continue;
+      const content = Array.isArray(m.content)
+        ? m.content
+        : [{ type: 'text' as const, text: m.content }];
+      msgs[i] = { ...m, content: [...content, { type: 'text' as const, text: volatileEnvText }] };
+      info.envRelocatedChars = volatileEnvText.length;
+      break;
     }
   }
 
