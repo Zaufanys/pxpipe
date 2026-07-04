@@ -39,6 +39,27 @@ export interface Env {
    *  Cloudflare ingests console.log as Workers Logs; pipe via Logpush to
    *  R2/S3 for the same JSONL shape Node writes to disk. */
   PXPIPE_TRACK?: string;
+  /** Shared secret callers must present via the `x-pxpipe-secret` header
+   *  whenever an API-key override is configured. Without this gate a
+   *  discovered workers.dev URL is an open key-spender: the Worker would
+   *  attach your key to any stranger's request. Set with:
+   *    npx wrangler secret put PXPIPE_WORKER_SECRET */
+  PXPIPE_WORKER_SECRET?: string;
+}
+
+/** Compare SHA-256 digests instead of the raw strings so the comparison
+ *  can't leak a prefix-match timing signal. */
+async function secretsMatch(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(a)),
+    crypto.subtle.digest('SHA-256', enc.encode(b)),
+  ]);
+  const va = new Uint8Array(da);
+  const vb = new Uint8Array(db);
+  let diff = 0;
+  for (let i = 0; i < va.length; i++) diff |= (va[i] ?? 0) ^ (vb[i] ?? 0);
+  return diff === 0;
 }
 
 const truthy = (v: string | undefined, fallback: boolean): boolean =>
@@ -46,6 +67,34 @@ const truthy = (v: string | undefined, fallback: boolean): boolean =>
 
 export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+    // ── Caller auth ────────────────────────────────────────────────────
+    // If this deployment injects API keys, never serve anonymous callers:
+    // workers.dev URLs are discoverable, and without this gate anyone who
+    // finds the URL spends this deployment's API credits.
+    if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+      if (!env.PXPIPE_WORKER_SECRET) {
+        return new Response(
+          JSON.stringify({
+            error:
+              'refusing to proxy: an API key override is configured but PXPIPE_WORKER_SECRET is not, ' +
+              'which would let anyone who finds this URL spend the configured key. ' +
+              'Run `npx wrangler secret put PXPIPE_WORKER_SECRET` and send the value as the x-pxpipe-secret header.',
+          }),
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      const presented = req.headers.get('x-pxpipe-secret') ?? '';
+      if (!(await secretsMatch(presented, env.PXPIPE_WORKER_SECRET))) {
+        return new Response(
+          JSON.stringify({ error: 'missing or invalid x-pxpipe-secret header' }),
+          { status: 401, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      // Don't forward the shared secret upstream.
+      req = new Request(req);
+      req.headers.delete('x-pxpipe-secret');
+    }
+
     const transform: TransformOptions = {
       compress: truthy(env.COMPRESS, true),
       compressTools: truthy(env.COMPRESS_TOOLS, true),
