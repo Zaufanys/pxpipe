@@ -347,6 +347,19 @@ describe('transformOpenAIResponses (gpt-5.6)', () => {
     expect(textParts.some((p) => p.text?.includes('Do the thing'))).toBe(true);
   });
 
+  it('records outgoingTextChars for compressed Responses requests (denominator parity with Chat)', async () => {
+    const body = enc.encode(JSON.stringify({
+      model: 'gpt-5.6',
+      instructions: BIG_INSTRUCTIONS,
+      input: [{ role: 'user', content: 'Please do the thing.' }],
+    }));
+    const result = await transformOpenAIResponses(body, { charsPerToken: 1, minCompressChars: 1 });
+    expect(result.info.compressed).toBe(true);
+    // Chat set this via countOutgoingTextChars; Responses never recorded it, so
+    // the tokens ≈ α·outgoingTextChars + β·imagePixels denominator was missing.
+    expect(result.info.outgoingTextChars).toBeGreaterThan(0);
+  });
+
   it('returns compressed=false with not_profitable/below_min reason for small input', async () => {
     const body = enc.encode(JSON.stringify({
       model: 'gpt-5.6',

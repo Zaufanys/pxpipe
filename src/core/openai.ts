@@ -418,6 +418,32 @@ function countOutgoingTextChars(req: OpenAIChatRequest): number {
   return n;
 }
 
+/** Outgoing text-char denominator for the GPT Responses regression, mirroring
+ *  countOutgoingTextChars for Chat: instructions + message-item text (string or
+ *  input_text parts) + flat tool name/description/parameters. input_image base64
+ *  is excluded on purpose — it is image cost, not text (responsesContentText
+ *  already drops non-text parts). */
+function countResponsesOutgoingTextChars(req: ResponsesRequest): number {
+  let n = 0;
+  if (typeof req.instructions === 'string') n += req.instructions.length;
+  if (typeof req.input === 'string') {
+    n += req.input.length;
+  } else if (Array.isArray(req.input)) {
+    for (const item of req.input) {
+      n += responsesContentText((item as ResponsesInputItem).content).length;
+    }
+  }
+  if (Array.isArray(req.tools)) {
+    for (const tool of req.tools) {
+      if (!isFlatFunctionTool(tool)) continue;
+      if (typeof tool.name === 'string') n += tool.name.length;
+      if (typeof tool.description === 'string') n += tool.description.length;
+      if (tool.parameters !== undefined) n += safeStringifyLen(tool.parameters);
+    }
+  }
+  return n;
+}
+
 function safeStringifyLen(v: unknown): number {
   try {
     return JSON.stringify(v)?.length ?? 0;
@@ -986,6 +1012,9 @@ export async function transformOpenAIResponses(
 
   if (rewrittenTools !== undefined) req.tools = rewrittenTools;
 
+  // Regression denominator, same as the Chat path — Responses was the only
+  // transform that never recorded it.
+  info.outgoingTextChars = countResponsesOutgoingTextChars(req);
   info.compressed = true;
   return { body: new TextEncoder().encode(JSON.stringify(req)), info };
 }
