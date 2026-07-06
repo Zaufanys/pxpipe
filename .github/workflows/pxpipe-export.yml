@@ -1,0 +1,39 @@
+# Manual demo of the pxpipe context-render Action (action.yml at the repo root).
+# Renders a target path (default src/) into dense PNG context pages + a fact-sheet and
+# uploads them as a workflow artifact. Also doubles as a smoke test for the Action.
+name: pxpipe export
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Path(s) to render
+        required: false
+        default: src/
+      include:
+        description: Include glob(s), space-separated (empty = all text files)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render context
+        id: px
+        uses: ./
+        with:
+          target: ${{ inputs.target }}
+          include: ${{ inputs.include }}
+          artifact-name: pxpipe-context
+      - name: Echo savings
+        shell: bash
+        run: |
+          echo "pages:        ${{ steps.px.outputs.page-count }}"
+          echo "text tokens:  ${{ steps.px.outputs.text-tokens }}"
+          echo "image tokens: ${{ steps.px.outputs.image-tokens }}"
+          echo "percent saved: ${{ steps.px.outputs.percent-saved }}"
