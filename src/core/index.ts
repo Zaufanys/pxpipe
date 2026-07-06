@@ -39,6 +39,17 @@ export {
   type VerbatimRiskReason,
   type VerbatimRiskVerdict,
 } from './verbatim-guard.js';
+export {
+  REHYDRATE_TOOL_NAME,
+  RecoverableStore,
+  rehydrateToolDef,
+  rehydrateToolResult,
+  rehydrateMarker,
+  parseRehydrateMarker,
+  isRehydrateToolUse,
+  rehydrateRequestedId,
+  type RecoverableLike,
+} from './rehydrate.js';
 export { transformOpenAIChatCompletions, transformOpenAIResponses, resolveVisionCost, openAIVisionTokens } from './openai.js';
 export { createProxy, type ProxyConfig, type ProxyEvent } from './proxy.js';
 export {

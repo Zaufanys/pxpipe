@@ -161,6 +161,44 @@ returns the originals of imaged blocks. Pure-JS runtime (Node and
 edge/Workers); `@napi-rs/canvas` is build-time only. Full API:
 `src/core/index.ts`.
 
+### Rehydrate — exact recall of imaged regions
+
+Imaging is a lossy gist tier, so for content the model may need **byte-exact**
+(a whole code file, a big table) a stateful host can offer a "give it back as
+text" escape hatch. Turn on `rehydrate` and pxpipe stamps a
+`[pxpipe:rehydrate id=rec_…]` marker beside each imaged region; pair it with the
+tool + store from `pxpipe-proxy`:
+
+```ts
+import {
+  transformAnthropicMessages, rehydrateToolDef,
+  RecoverableStore, isRehydrateToolUse, rehydrateToolResult,
+} from "pxpipe-proxy";
+
+const store = new RecoverableStore();               // lives across turns
+
+// 1. transform with rehydrate on, add the tool, remember the originals
+const { body, info } = await transformAnthropicMessages({
+  body: requestBytes, model: "claude-fable-5",
+  options: { rehydrate: true },
+});
+store.ingest(info.recoverable);                      // rec_… → exact text
+// (add rehydrateToolDef() to the request's `tools` array)
+
+// 2. when the model calls pxpipe_rehydrate({id}), answer from the store
+for (const block of assistantToolUseBlocks) {
+  if (isRehydrateToolUse(block)) {
+    const toolResult = rehydrateToolResult(store, block); // exact bytes, or is_error
+    // …append toolResult to the next request's user message
+  }
+}
+```
+
+The store is the host's (pxpipe keeps no global state), bounded with oldest-first
+eviction. Unknown/evicted ids return an `is_error` result so the model re-reads
+the source instead of fabricating. Default off — the transparent proxy path is
+unchanged. See `src/core/rehydrate.ts`.
+
 ## Development
 
 ```bash
