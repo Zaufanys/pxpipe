@@ -1,0 +1,162 @@
+# pxpipe context-render — GitHub Action
+#
+# Renders files / a directory / a git diff into dense PNG "context pages" plus a
+# verbatim fact-sheet, using the published `pxpipe-proxy` CLI. Use it in a workflow
+# to attach a token-cheap image rendering of your repo (or a PR diff) as a build
+# artifact — the same rendering the proxy feeds a model, produced inside CI.
+#
+# Portable: pulls `pxpipe-proxy` from npm via npx, so it works in ANY repo, not just
+# this one. Nothing here touches the network beyond the npm install and never needs a
+# model API key — `export` is a pure local render + token estimate.
+#
+# Example:
+#   - uses: teamchong/pxpipe@main
+#     with:
+#       target: src/
+#       include: "*.ts"
+#       model: claude-sonnet-4-5
+name: pxpipe context render
+description: Render files or a git diff into dense PNG context pages + a verbatim fact-sheet (token-cheap LLM context) using pxpipe.
+branding:
+  icon: image
+  color: purple
+
+inputs:
+  target:
+    description: File(s) or director(ies) to render. Space-separated. Ignored when `git` or `diff` is set.
+    required: false
+    default: "."
+  include:
+    description: Glob(s) to include (space-separated), e.g. "*.ts *.md". Empty = all text files.
+    required: false
+    default: ""
+  exclude:
+    description: Glob(s) to exclude (space-separated).
+    required: false
+    default: ""
+  git:
+    description: 'Render "git diff HEAD" + untracked files instead of `target`.'
+    required: false
+    default: "false"
+  diff:
+    description: 'Render "git diff <ref>" (e.g. HEAD~3 or origin/main). Overrides `git`/`target`.'
+    required: false
+    default: ""
+  model:
+    description: Model id used for the vision-token estimate in the report.
+    required: false
+    default: "claude-sonnet-4-5"
+  version:
+    description: pxpipe-proxy version to run (npm dist-tag or exact version).
+    required: false
+    default: "latest"
+  out-dir:
+    description: Base directory to write the export folder into.
+    required: false
+    default: ${{ runner.temp }}/pxpipe
+  upload-artifact:
+    description: Upload the rendered pages + fact-sheet + manifest as a workflow artifact.
+    required: false
+    default: "true"
+  artifact-name:
+    description: Name of the uploaded artifact.
+    required: false
+    default: "pxpipe-context"
+  node-version:
+    description: Node.js version to set up for running the CLI.
+    required: false
+    default: "22"
+
+outputs:
+  out-dir:
+    description: Absolute path of the generated export folder (page-*.png, factsheet.txt, manifest.json, prompt.txt).
+    value: ${{ steps.render.outputs.out-dir }}
+  page-count:
+    description: Number of rendered PNG pages.
+    value: ${{ steps.render.outputs.page-count }}
+  text-tokens:
+    description: Estimated tokens if the source were sent as plain text.
+    value: ${{ steps.render.outputs.text-tokens }}
+  image-tokens:
+    description: Estimated tokens to send the rendered pages.
+    value: ${{ steps.render.outputs.image-tokens }}
+  percent-saved:
+    description: (text - image) / text * 100.
+    value: ${{ steps.render.outputs.percent-saved }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Render context with pxpipe
+      id: render
+      shell: bash
+      env:
+        PXP_TARGET: ${{ inputs.target }}
+        PXP_INCLUDE: ${{ inputs.include }}
+        PXP_EXCLUDE: ${{ inputs.exclude }}
+        PXP_GIT: ${{ inputs.git }}
+        PXP_DIFF: ${{ inputs.diff }}
+        PXP_MODEL: ${{ inputs.model }}
+        PXP_VERSION: ${{ inputs.version }}
+        PXP_OUT: ${{ inputs.out-dir }}
+      run: |
+        set -euo pipefail
+        args=(export --json --model "$PXP_MODEL" --out "$PXP_OUT")
+        if [ -n "$PXP_DIFF" ]; then
+          args+=(--diff "$PXP_DIFF")
+        elif [ "$PXP_GIT" = "true" ]; then
+          args+=(--git)
+        fi
+        # shellcheck disable=SC2206
+        for g in $PXP_INCLUDE; do args+=(--include "$g"); done
+        for g in $PXP_EXCLUDE; do args+=(--exclude "$g"); done
+        if [ -z "$PXP_DIFF" ] && [ "$PXP_GIT" != "true" ]; then
+          for t in $PXP_TARGET; do args+=("$t"); done
+        fi
+
+        echo "::group::pxpipe export"
+        report=$(npx -y "pxpipe-proxy@${PXP_VERSION}" "${args[@]}")
+        echo "$report"
+        echo "::endgroup::"
+
+        # Parse the JSON report and expose it as step outputs + a job summary.
+        node - "$report" <<'NODE'
+        const fs = require('fs');
+        const r = JSON.parse(process.argv[2]);
+        const out = process.env.GITHUB_OUTPUT;
+        const set = (k, v) => fs.appendFileSync(out, `${k}=${v}\n`);
+        set('out-dir', r.outDir);
+        set('page-count', r.pageCount);
+        set('text-tokens', r.textTokens);
+        set('image-tokens', r.imageTokens);
+        set('percent-saved', r.percentSaved);
+        const summary = process.env.GITHUB_STEP_SUMMARY;
+        if (summary) {
+          const saved = r.percentSaved >= 0
+            ? `${r.percentSaved.toFixed(1)}% saved`
+            : `${Math.abs(r.percentSaved).toFixed(1)}% more expensive`;
+          fs.appendFileSync(summary,
+            `### pxpipe context render\n\n` +
+            `| metric | value |\n| --- | ---: |\n` +
+            `| files | ${r.fileCount} |\n` +
+            `| source chars | ${r.sourceChars.toLocaleString()} |\n` +
+            `| pages | ${r.pageCount} |\n` +
+            `| text tokens | ~${r.textTokens.toLocaleString()} |\n` +
+            `| image tokens | ~${r.imageTokens.toLocaleString()} |\n` +
+            `| **savings** | **${saved}** |\n` +
+            `| model | \`${r.model}\` |\n`);
+        }
+        NODE
+
+    - name: Upload rendered context
+      if: ${{ inputs.upload-artifact == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.render.outputs.out-dir }}
+        if-no-files-found: warn

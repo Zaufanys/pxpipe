@@ -53,13 +53,43 @@ normally — pxpipe compresses the *request* only, never the model's output.
 Recent turns stay text; the system prompt, tool docs, and older bulk history
 are imaged.
 
+## Run it inside GitHub
+
+**Codespaces** — open the repo in a Codespace (or VS Code Dev Containers) and
+the [`.devcontainer`](.devcontainer/devcontainer.json) provisions Node 22 +
+pnpm, installs, and builds. Run `pnpm dev:node`; the dashboard is auto-forwarded
+on port 47821.
+
+**GitHub Action** — [`action.yml`](action.yml) renders any path or PR diff into
+dense PNG context pages + a verbatim fact-sheet inside CI, and uploads them as a
+build artifact (no model API key needed — `export` is a pure local render). Drop
+it in a workflow:
+
+```yaml
+- uses: teamchong/pxpipe@main
+  with:
+    diff: origin/${{ github.base_ref }}   # render just this PR's diff
+    model: claude-sonnet-4-5
+# outputs: page-count, text-tokens, image-tokens, percent-saved
+```
+
+A ready-to-run demo lives at
+[`.github/workflows/pxpipe-export.yml`](.github/workflows/pxpipe-export.yml)
+(Actions tab → *pxpipe export* → *Run workflow*).
+
 ## The honest part
 
 - **It is lossy.** Exact 12-char hex strings in dense imaged content:
   **13/15** on Fable 5, **0/15** on Opus — and misses are *silent
   confabulations*, not errors. Byte-exact values (IDs, hashes, secrets)
-  must stay text; recent turns do. A dedicated verbatim-risk guard is not
-  built yet.
+  must stay text; recent turns do. A built-in **verbatim-risk guard** now
+  auto-pins any live-region block that carries a credential shape (AWS /
+  GitHub / GitLab / Google / Slack / Stripe / OpenAI-Anthropic keys, JWTs,
+  PEM private keys, `password=`/`Bearer` assignments) as text, so a secret
+  is never silently mis-OCR'd or buried in a PNG. Identifier-dense bulk
+  (lockfiles, `git log`) still images — the fact-sheet rides the exact
+  tokens alongside. Toggle with the `verbatimGuard` option (on by
+  default). See `src/core/verbatim-guard.ts`.
 - **Escape hatch:** subagents on non-allowlisted models pass through as
   text — route byte-exact work there
   (`CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-4-6`, or `model: sonnet` in
@@ -130,6 +160,44 @@ const { body, applied, info } = await transformAnthropicMessages({
 returns the originals of imaged blocks. Pure-JS runtime (Node and
 edge/Workers); `@napi-rs/canvas` is build-time only. Full API:
 `src/core/index.ts`.
+
+### Rehydrate — exact recall of imaged regions
+
+Imaging is a lossy gist tier, so for content the model may need **byte-exact**
+(a whole code file, a big table) a stateful host can offer a "give it back as
+text" escape hatch. Turn on `rehydrate` and pxpipe stamps a
+`[pxpipe:rehydrate id=rec_…]` marker beside each imaged region; pair it with the
+tool + store from `pxpipe-proxy`:
+
+```ts
+import {
+  transformAnthropicMessages, rehydrateToolDef,
+  RecoverableStore, isRehydrateToolUse, rehydrateToolResult,
+} from "pxpipe-proxy";
+
+const store = new RecoverableStore();               // lives across turns
+
+// 1. transform with rehydrate on, add the tool, remember the originals
+const { body, info } = await transformAnthropicMessages({
+  body: requestBytes, model: "claude-fable-5",
+  options: { rehydrate: true },
+});
+store.ingest(info.recoverable);                      // rec_… → exact text
+// (add rehydrateToolDef() to the request's `tools` array)
+
+// 2. when the model calls pxpipe_rehydrate({id}), answer from the store
+for (const block of assistantToolUseBlocks) {
+  if (isRehydrateToolUse(block)) {
+    const toolResult = rehydrateToolResult(store, block); // exact bytes, or is_error
+    // …append toolResult to the next request's user message
+  }
+}
+```
+
+The store is the host's (pxpipe keeps no global state), bounded with oldest-first
+eviction. Unknown/evicted ids return an `is_error` result so the model re-reads
+the source instead of fabricating. Default off — the transparent proxy path is
+unchanged. See `src/core/rehydrate.ts`.
 
 ## Development
 

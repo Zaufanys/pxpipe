@@ -35,6 +35,8 @@ import {
   renderTextToPngsWithCharLimit,
 } from './render.js';
 import { factSheetText } from './factsheet.js';
+import { verbatimRiskVerdict, type VerbatimRiskReason } from './verbatim-guard.js';
+import { rehydrateMarker } from './rehydrate.js';
 import { stripSchemaDescriptions, schemaHasStructure } from './schema-strip.js';
 import { bytesToBase64 } from './png.js';
 import { collapseHistory, HISTORY_SYNTHETIC_INTRO } from './history.js';
@@ -121,6 +123,19 @@ export interface TransformOptions {
    *  for every block rendered to images. Off by default (entries inflate `info`;
    *  only a stateful harness can use them). */
   emitRecoverable?: boolean;
+  /** Rehydrate mode (default off). Implies `emitRecoverable`, and additionally stamps a
+   *  tiny `[pxpipe:rehydrate id=rec_…]` marker beside each imaged live-region block so the
+   *  model can name it. A stateful host pairs this with `rehydrateToolDef()` +
+   *  `RecoverableStore` (src/core/rehydrate.ts) to serve the exact text back on demand —
+   *  the escape hatch for dense byte-exact recall the fact-sheet can't hold. Adds a few
+   *  tokens per imaged block; leaves the transparent proxy path (option off) untouched. */
+  rehydrate?: boolean;
+  /** Built-in verbatim-risk guard: auto-pin live-region blocks (reminders, tool_results)
+   *  as text when they carry a credential/secret shape, so a secret is never silently
+   *  mis-OCR'd or buried in a PNG. ON by default. Runs AFTER `keepSharp` (a caller `true`
+   *  still wins). Only ever keeps MORE as text — never causes more imaging. Identifier-dense
+   *  bulk (lockfiles, git log) still images. See verbatim-guard.ts. */
+  verbatimGuard?: boolean;
 }
 
 const DEFAULTS: Required<TransformOptions> = {
@@ -146,6 +161,8 @@ const DEFAULTS: Required<TransformOptions> = {
   reflow: true,
   keepSharp: () => false,
   emitRecoverable: false,
+  rehydrate: false,
+  verbatimGuard: true,
   // GPT-only knobs; the Anthropic transform ignores them but Required<> needs them.
   collapseHistory: true,
   gptHistory: {},
@@ -429,7 +446,7 @@ export function isCompressionProfitableAmortized(
 /** Increment a passthrough-reason counter on `info`. Lazily allocates `passthroughReasons`. */
 function bumpPassthrough(
   info: TransformInfo,
-  reason: 'below_threshold' | 'not_profitable' | 'kept_sharp',
+  reason: 'below_threshold' | 'not_profitable' | 'kept_sharp' | 'verbatim_guard',
 ): void {
   if (!info.passthroughReasons) info.passthroughReasons = {};
   info.passthroughReasons[reason] = (info.passthroughReasons[reason] ?? 0) + 1;
@@ -446,6 +463,42 @@ function callerKeepsSharp(
   } catch {
     return false;
   }
+}
+
+/**
+ * Decide whether a live-region block must stay text, and record why on `info`.
+ *
+ * Order: the caller's `keepSharp` predicate wins first (explicit host fidelity hint);
+ * otherwise the built-in verbatim-risk guard (`o.verbatimGuard`, on by default) pins
+ * credential-bearing blocks. Returns `true` when pinned. The guard is defensive — a
+ * throw inside the detector is swallowed and treated as "image as usual", never
+ * blocking a request.
+ */
+function pinBlockAsText(
+  o: Required<TransformOptions>,
+  block: KeepSharpBlock,
+  info: TransformInfo,
+): boolean {
+  if (callerKeepsSharp(o.keepSharp, block)) {
+    bumpPassthrough(info, 'kept_sharp');
+    info.keptSharpBlocks = (info.keptSharpBlocks ?? 0) + 1;
+    return true;
+  }
+  if (o.verbatimGuard) {
+    let reason: VerbatimRiskReason | null = null;
+    try {
+      reason = verbatimRiskVerdict(block.text).reason;
+    } catch {
+      reason = null;
+    }
+    if (reason) {
+      bumpPassthrough(info, 'verbatim_guard');
+      const pins = (info.verbatimGuardPins ??= {});
+      pins[reason] = (pins[reason] ?? 0) + 1;
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Logical bucket for per-gate-call char attribution. Used by the rolling-cpt
@@ -549,8 +602,14 @@ export interface TransformInfo {
   droppedChars?: number;
   /** Top dropped codepoints by frequency (`U+HHHH` → count), at most 20 entries. */
   droppedCodepointsTop?: Record<string, number>;
-  /** Why blocks passed through without compression. Only present when count > 0. */
-  passthroughReasons?: { below_threshold?: number; not_profitable?: number; kept_sharp?: number };
+  /** Why blocks passed through without compression. Only present when count > 0.
+   *  `verbatim_guard` counts blocks the built-in verbatim-risk guard pinned as text. */
+  passthroughReasons?: {
+    below_threshold?: number;
+    not_profitable?: number;
+    kept_sharp?: number;
+    verbatim_guard?: number;
+  };
   /** Slab gate diagnostics — imageTokens, textTokens, burn terms, and verdict.
    *  Lets hosts measure flap-prevention efficacy and tune amortization horizon. */
   gateEval?: {
@@ -569,6 +628,10 @@ export interface TransformInfo {
   historyTextChars?: number;
   /** Blocks pinned as text by the caller's `keepSharp` predicate this request. */
   keptSharpBlocks?: number;
+  /** Blocks the built-in verbatim-risk guard pinned as text this request (`secret` =
+   *  a credential-shaped token was present). Only present when the guard fired.
+   *  See verbatim-guard.ts. */
+  verbatimGuardPins?: { secret?: number };
   /** Imaged live-region blocks with original text + provenance, when `emitRecoverable`. */
   recoverable?: RecoverableBlock[];
   truncatedToolResults?: number;
@@ -787,13 +850,14 @@ export async function sha8(text: string): Promise<string> {
   return hex;
 }
 
-/** Record a recovery entry when `emitRecoverable` is on. No-op (no hash cost) when off. */
+/** Record a recovery entry when recovery is on, and return its `rec_…` id (used to stamp
+ *  the in-body rehydrate marker). No-op returning `undefined` (no hash cost) when off. */
 async function recordRecoverable(
   info: TransformInfo,
   emit: boolean,
   entry: { kind: RecoverableBlock['kind']; toolUseId?: string; text: string; imageCount: number },
-): Promise<void> {
-  if (!emit) return;
+): Promise<string | undefined> {
+  if (!emit) return undefined;
   const id = 'rec_' + (await sha8(`${entry.kind}\u0000${entry.toolUseId ?? ''}\u0000${entry.text}`));
   (info.recoverable ??= []).push({
     id,
@@ -802,6 +866,7 @@ async function recordRecoverable(
     text: entry.text,
     imageCount: entry.imageCount,
   });
+  return id;
 }
 
 /** Hash the concatenated base64 of every image block on `messages[0]` (the synthetic
@@ -1785,10 +1850,9 @@ export async function transformRequest(
             processedExisting.push(blk);
             continue;
           }
-          // Caller fidelity override: pin this block as text, skip imaging.
-          if (callerKeepsSharp(o.keepSharp, { kind: 'reminder', text: (blk as TextBlock).text })) {
-            bumpPassthrough(info, 'kept_sharp');
-            info.keptSharpBlocks = (info.keptSharpBlocks ?? 0) + 1;
+          // Fidelity override: caller `keepSharp` or the built-in verbatim-risk guard
+          // pins this block as text, skipping imaging.
+          if (pinBlockAsText(o, { kind: 'reminder', text: (blk as TextBlock).text }, info)) {
             processedExisting.push(blk);
             continue;
           }
@@ -1829,11 +1893,14 @@ export async function transformRequest(
           if (reminderFactSheet) processedExisting.push({ type: 'text', text: reminderFactSheet });
           info.imagePixels = (info.imagePixels ?? 0) + pixels;
           info.reminderImgs = (info.reminderImgs ?? 0) + imgs.length;
-          await recordRecoverable(info, o.emitRecoverable, {
+          const reminderRecId = await recordRecoverable(info, o.emitRecoverable || o.rehydrate, {
             kind: 'reminder',
             text: reminderRaw,
             imageCount: imgs.length,
           });
+          if (o.rehydrate && reminderRecId) {
+            processedExisting.push({ type: 'text', text: rehydrateMarker(reminderRecId) });
+          }
           info.compressedChars += reminderRaw.length;
           bumpBucket(info, 'reminder', reminderRaw.length);
           info.imageCount += imgs.length;
@@ -1871,10 +1938,9 @@ export async function transformRequest(
             }
             const innerRaw = tr.content;
             if (typeof innerRaw === 'string') {
-              // Caller fidelity override: pin this tool_result as text.
-              if (callerKeepsSharp(o.keepSharp, { kind: 'tool_result', text: innerRaw, toolUseId: tr.tool_use_id })) {
-                bumpPassthrough(info, 'kept_sharp');
-                info.keptSharpBlocks = (info.keptSharpBlocks ?? 0) + 1;
+              // Fidelity override: caller `keepSharp` or the built-in verbatim-risk guard
+              // pins this tool_result as text (e.g. it carries a credential/secret).
+              if (pinBlockAsText(o, { kind: 'tool_result', text: innerRaw, toolUseId: tr.tool_use_id }, info)) {
                 rewritten.push(blk);
                 continue;
               }
@@ -1902,7 +1968,7 @@ export async function transformRequest(
                 info.imagePixels = (info.imagePixels ?? 0) + pixels;
                 info.toolResultImgs = (info.toolResultImgs ?? 0) + imgs.length;
                 info.imageCount += imgs.length;
-                await recordRecoverable(info, o.emitRecoverable, {
+                const trRecId = await recordRecoverable(info, o.emitRecoverable || o.rehydrate, {
                   kind: 'tool_result',
                   toolUseId: tr.tool_use_id,
                   text: innerRaw,
@@ -1914,9 +1980,12 @@ export async function transformRequest(
                   droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
                 }
                 const trFactSheet = factSheetText(innerRaw);
+                const trExtra: TextBlock[] = [];
+                if (trFactSheet) trExtra.push({ type: 'text', text: trFactSheet });
+                if (o.rehydrate && trRecId) trExtra.push({ type: 'text', text: rehydrateMarker(trRecId) });
                 rewritten.push({
                   ...tr,
-                  content: trFactSheet ? [...imgs, { type: 'text' as const, text: trFactSheet }] : imgs,
+                  content: trExtra.length > 0 ? [...imgs, ...trExtra] : imgs,
                 });
                 changed = true;
                 bumpBucket(info, toolResultBucket(classifyContent(inner)), innerRaw.length);
@@ -1934,10 +2003,9 @@ export async function transformRequest(
                   continue;
                 }
                 const innerTextRaw = (ib as TextBlock).text;
-                // Caller fidelity override: pin this tool_result part as text.
-                if (callerKeepsSharp(o.keepSharp, { kind: 'tool_result_part', text: innerTextRaw, toolUseId: tr.tool_use_id })) {
-                  bumpPassthrough(info, 'kept_sharp');
-                  info.keptSharpBlocks = (info.keptSharpBlocks ?? 0) + 1;
+                // Fidelity override: caller `keepSharp` or the built-in verbatim-risk guard
+                // pins this tool_result part as text.
+                if (pinBlockAsText(o, { kind: 'tool_result_part', text: innerTextRaw, toolUseId: tr.tool_use_id }, info)) {
                   newInner.push(ib as TextBlock | ImageBlock);
                   continue;
                 }
@@ -1979,12 +2047,15 @@ export async function transformRequest(
                 info.imagePixels = (info.imagePixels ?? 0) + pixels;
                 info.toolResultImgs = (info.toolResultImgs ?? 0) + imgs.length;
                 info.imageCount += imgs.length;
-                await recordRecoverable(info, o.emitRecoverable, {
+                const partRecId = await recordRecoverable(info, o.emitRecoverable || o.rehydrate, {
                   kind: 'tool_result_part',
                   toolUseId: tr.tool_use_id,
                   text: innerTextRaw,
                   imageCount: imgs.length,
                 });
+                if (o.rehydrate && partRecId) {
+                  newInner.push({ type: 'text', text: rehydrateMarker(partRecId) });
+                }
                 info.compressedChars += innerTextRaw.length;
                 info.droppedChars = (info.droppedChars ?? 0) + droppedChars;
                 for (const [cp, n] of dcp) {
