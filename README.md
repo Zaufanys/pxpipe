@@ -144,6 +144,32 @@ tokens and holds ≈92,000 chars, so text wins only above ~19 chars/token —
 Claude Code traffic runs ~1.91 (N=391). A per-request estimator decides;
 sparse prose stays text. Events log to `~/.pxpipe/events.jsonl`.
 
+## Privacy & data flow
+
+pxpipe is **local and private by design**. There is no account, no pxpipe-side
+server, and no phone-home.
+
+- **Library use makes zero network calls.** The transform / render / guard /
+  rehydrate functions are pure — data in, data out, inside your own process.
+  pxpipe never sends your content anywhere; *your* code decides where the
+  transformed request goes.
+- **The proxy contacts exactly one destination: your model provider.** The whole
+  codebase has two outbound `fetch()` calls, both to the upstream API you already
+  use (`api.anthropic.com` / `api.openai.com`, or whatever you configure) — the
+  request forward and a free `count_tokens` probe to that *same* endpoint. No
+  third host is ever contacted.
+- **No telemetry.** No analytics SDK, no Sentry/PostHog/Segment, nothing. The
+  only "logging" is local metrics written to `~/.pxpipe/events.jsonl` on your
+  machine, which you own and can delete (`rm -rf ~/.pxpipe`). Override the path
+  with `PXPIPE_LOG`.
+- **The dashboard is loopback-only** (`127.0.0.1`) by default — it is *not*
+  reachable from your network unless you explicitly set `HOST=0.0.0.0`.
+- **The `export` / GitHub Action is a pure local render** — no API key, no model
+  call; nothing leaves your machine or CI runner beyond normal GitHub.
+
+The only place your data goes is wherever *you* already send it. pxpipe is a
+middleman that runs on your own machine and adds no new destination.
+
 ## Library use (no proxy)
 
 ```ts
