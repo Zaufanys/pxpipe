@@ -35,9 +35,6 @@ const NOT_RISKY: VerbatimRiskVerdict = { pin: false, reason: null };
 
 /** Defensive input bound — matches factsheet.ts. Live-region blocks are already paged. */
 const MAX_SCAN = 262_144;
-/** Whitespace-free chunks longer than this are blobs (base64, minified) — skip for the
- *  opaque-token patterns to keep extraction strictly O(n). */
-const MAX_CHUNK = 512;
 /** Per-line scan cap for the keyword-assignment pattern (defends against minified lines). */
 const MAX_LINE = 4096;
 /** Max lines scanned for assignments — a real `.env`/config leak shows up in the first few. */
@@ -95,6 +92,11 @@ function looksLikeSecretValue(value: string): boolean {
   // High-entropy mixed token: letters+digits (most keys), or a long base64/hex-ish blob.
   if (hasLetter && hasDigit) return true;
   if (value.length >= 24 && (hasSymbol || /^[0-9a-fA-F]+$/.test(value))) return true;
+  // Pure-alpha or pure-numeric ≥16 chars, no spaces, directly after a credential keyword
+  // (SECRET_ASSIGNMENT/SECRET_BEARER already require that adjacency): no ordinary single
+  // English word or plain number reaches this length right after `api_key:`/`Bearer `, so
+  // treat it as secret-shaped too — closes a false-negative gap the mixed-only rule left.
+  if (value.length >= 16 && hasLetter !== hasDigit) return true;
   return false;
 }
 
@@ -102,10 +104,15 @@ function looksLikeSecretValue(value: string): boolean {
 function containsSecret(scan: string): boolean {
   if (PEM_PRIVATE_KEY.test(scan) || OPENSSH_PRIVATE_KEY.test(scan)) return true;
 
-  // Opaque tokens: split on whitespace, skip blob-length chunks (bounds each regex to a
-  // short chunk → strictly O(n), no backtracking blowup on base64/minified input).
+  // Opaque tokens: split on whitespace. Every pattern in SECRET_TOKEN_PATTERNS is a single
+  // bounded-quantifier charset match (no nested/overlapping repetition), so it's linear-time
+  // even on a very long chunk — verified at 2M chars in low tens of ms, adversarial included
+  // — so unlike factsheet.ts's path/URL patterns there is no blob-length chunk to skip here.
+  // (An earlier version skipped chunks over ~512 chars, which let a real credential embedded
+  // in a longer whitespace-free run — e.g. a minified JSON blob or a URL query string — pass
+  // through undetected.)
   for (const chunk of scan.split(/\s+/)) {
-    if (chunk.length < 12 || chunk.length > MAX_CHUNK) continue;
+    if (chunk.length < 12) continue;
     for (const re of SECRET_TOKEN_PATTERNS) {
       if (re.test(chunk)) return true;
     }

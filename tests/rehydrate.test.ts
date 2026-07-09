@@ -77,6 +77,16 @@ describe('RecoverableStore', () => {
     store.clear();
     expect(store.size).toBe(0);
   });
+
+  it('falls back to the default bound on a non-finite maxEntries instead of disabling eviction (regression)', () => {
+    // Math.max(1, Math.floor(NaN)) is NaN, and `size > NaN` is always false, so a NaN
+    // maxEntries used to silently disable the eviction bound entirely.
+    const store = new RecoverableStore(NaN);
+    const many = Array.from({ length: 5000 }, (_, i) => ({ id: `id_${i}`, text: 'x' }));
+    store.ingest(many);
+    expect(store.size).toBeLessThan(5000);
+    expect(store.size).toBeGreaterThan(0);
+  });
 });
 
 // ---- tool plumbing --------------------------------------------------------

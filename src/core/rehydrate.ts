@@ -93,7 +93,10 @@ export class RecoverableStore {
   private readonly maxEntries: number;
 
   constructor(maxEntries: number = DEFAULT_MAX_ENTRIES) {
-    this.maxEntries = Math.max(1, Math.floor(maxEntries));
+    // Math.max(1, Math.floor(NaN)) is NaN (any Math.max operand of NaN propagates), which
+    // would silently disable the eviction bound below (`size > NaN` is always false) instead
+    // of falling back to a sane default — guard explicitly rather than trust the caller.
+    this.maxEntries = Number.isFinite(maxEntries) ? Math.max(1, Math.floor(maxEntries)) : DEFAULT_MAX_ENTRIES;
   }
 
   /** Record every region from a transform's `info.recoverable`. Idempotent per id. */

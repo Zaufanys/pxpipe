@@ -43,6 +43,20 @@ describe('guiHtml', () => {
     expect(html).toMatch(/e\.metaKey \|\| e\.ctrlKey/);
     expect(html).toContain("e.key === 'Enter'");
   });
+
+  it('guards against a stale in-flight response after Clear (requestGen check)', () => {
+    // Regression guard: Clear must bump requestGen, and both the success and error
+    // paths of runCompress must check it before touching the DOM — verified live via
+    // Playwright network-delay interception during development (a response arriving
+    // after Clear must not resurrect the cleared results or pop a stale error banner).
+    expect(html).toContain('requestGen++');
+    expect(html).toMatch(/myGen !== requestGen/);
+  });
+
+  it('surfaces a truncated-input warning in the page markup', () => {
+    expect(html).toContain('id="truncatedWarn"');
+    expect(html).toContain('data.truncated');
+  });
 });
 
 describe('runGuiCompress', () => {

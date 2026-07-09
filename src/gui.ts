@@ -111,10 +111,10 @@ export function guiHtml(): string {
   :root {
     color-scheme: dark light;
     --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8ec;
-    --muted: #8b93a3; --accent: #7aa2ff; --accent-text: #0f1115; --good: #5fd28d; --bad: #ff6b6b;
+    --muted: #8b93a3; --accent: #7aa2ff; --accent-text: #0f1115; --good: #5fd28d; --bad: #ff6b6b; --warn: #e0a940;
   }
   @media (prefers-color-scheme: light) {
-    :root { --bg:#f6f7f9; --panel:#fff; --border:#e2e5eb; --text:#1a1d24; --muted:#5b6272; --accent:#2f5fdc; --accent-text:#fff; --good:#1c8a52; --bad:#c0392b; }
+    :root { --bg:#f6f7f9; --panel:#fff; --border:#e2e5eb; --text:#1a1d24; --muted:#5b6272; --accent:#2f5fdc; --accent-text:#fff; --good:#1c8a52; --bad:#c0392b; --warn:#9a6b0a; }
   }
   * { box-sizing: border-box; }
   body {
@@ -143,6 +143,10 @@ export function guiHtml(): string {
   #error {
     margin-top: 14px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--bad) 15%, transparent);
     border: 1px solid var(--bad); color: var(--bad); font-size: 13px;
+  }
+  .warn {
+    margin-bottom: 14px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--warn) 15%, transparent);
+    border: 1px solid var(--warn); color: var(--warn); font-size: 13px;
   }
   #results { margin-top: 28px; }
   .stats { display: flex; gap: 22px; flex-wrap: wrap; padding: 14px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
@@ -176,6 +180,7 @@ export function guiHtml(): string {
   <div id="error" hidden></div>
 
   <div id="results" hidden>
+    <div id="truncatedWarn" class="warn" hidden></div>
     <div class="stats">
       <div class="stat"><div class="k">Text tokens</div><div class="v" id="statTextTokens">–</div></div>
       <div class="stat"><div class="k">Image tokens</div><div class="v" id="statImageTokens">–</div></div>
@@ -202,12 +207,17 @@ export function guiHtml(): string {
   var charCount = document.getElementById('charCount');
   var lastPrompt = '';
   var lastFactsheet = '';
+  // Bumped on every new compress AND on Clear, so a response that arrives after the user
+  // moved on (cleared the form, or started a newer compress) is dropped instead of
+  // silently re-populating stale results/copy buttons or popping a stale error banner.
+  var requestGen = 0;
 
   function updateCharCount() {
     var n = ta.value.length;
     charCount.textContent = n > 0 ? fmt(n) + ' chars' : '';
   }
   ta.addEventListener('input', updateCharCount);
+  updateCharCount(); // sync on load — a bfcache-restored textarea can have a value already
 
   function flash(el, msg) {
     var orig = el.textContent;
@@ -219,6 +229,13 @@ export function guiHtml(): string {
 
   function render(data) {
     var m = data.manifest, tr = m.tokenReport;
+    var warnBox = document.getElementById('truncatedWarn');
+    if (data.truncated) {
+      warnBox.textContent = 'Your paste was longer than the 2,000,000-char limit — it was truncated before compressing, so these results only cover the first part of it.';
+      warnBox.hidden = false;
+    } else {
+      warnBox.hidden = true;
+    }
     document.getElementById('statTextTokens').textContent = fmt(tr.textTokens);
     document.getElementById('statImageTokens').textContent = fmt(tr.imageTokens);
     document.getElementById('statSaved').textContent =
@@ -251,6 +268,9 @@ export function guiHtml(): string {
   function runCompress() {
     var text = ta.value;
     if (!text.trim() || btn.disabled) return;
+    // Captured so a response that arrives after Clear (which bumps requestGen) is
+    // recognized as stale and ignored instead of resurrecting cleared results.
+    var myGen = ++requestGen;
     btn.disabled = true;
     status.textContent = 'Compressing…';
     errorBox.hidden = true;
@@ -262,14 +282,17 @@ export function guiHtml(): string {
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (r) {
+        if (myGen !== requestGen) return; // superseded by Clear or a newer compress
         if (!r.ok) throw new Error(r.data && r.data.error ? r.data.error : 'compress failed');
         render(r.data);
       })
       .catch(function (e) {
+        if (myGen !== requestGen) return;
         errorBox.textContent = 'Error: ' + e.message;
         errorBox.hidden = false;
       })
       .finally(function () {
+        if (myGen !== requestGen) return;
         btn.disabled = false;
         status.textContent = '';
       });
@@ -284,10 +307,13 @@ export function guiHtml(): string {
   });
 
   clearBtn.addEventListener('click', function () {
+    requestGen++; // invalidate any in-flight compress response
     ta.value = '';
     updateCharCount();
     errorBox.hidden = true;
     results.hidden = true;
+    btn.disabled = false;
+    status.textContent = '';
     ta.focus();
   });
 
