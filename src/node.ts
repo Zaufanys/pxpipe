@@ -31,6 +31,7 @@ import {
   dashboardPath,
   type DashboardRoute,
 } from './dashboard.js';
+import { handleGuiRequest } from './gui.js';
 
 /** Runtime config. The core transform tuning comes from DEFAULTS in
  *  transform.ts; startup knobs cover deployment plus emergency GPT scope
@@ -133,6 +134,8 @@ function printHelp(): void {
 Usage:
   pxpipe                run the proxy (no flags)
   pxpipe export [...]   render files/diff to PNG pages + cost report (see pxpipe export --help)
+  pxpipe gui [...]      open a local paste-in/compress-out page in your browser
+                        (no proxy, no API key, nothing sent anywhere — see pxpipe gui --help)
 
 The proxy compresses eligible tools, schemas, reminders, tool_results,
 and history; tracks events to disk; and measures real saved_pct via
@@ -856,8 +859,108 @@ async function runExport(argv: string[]): Promise<void> {
   // dragged straight into a chat. Best-effort; a failed open is non-fatal
   // since the report already printed the path.
   if (opts.open) {
-    spawnSync('open', [outDir], { stdio: 'ignore' });
+    openInOsHandler(outDir);
   }
+}
+
+// ---- cross-platform "open this in the OS" ---------------------------------
+
+/** Best-effort open a path or URL with the OS default handler (Finder/Explorer/
+ *  browser). Cross-platform: `open` on macOS, `start` via cmd on Windows,
+ *  `xdg-open` on Linux. Never throws — a failed open just means the user opens
+ *  it manually; the caller already printed where it is. */
+function openInOsHandler(target: string): void {
+  try {
+    if (process.platform === 'darwin') {
+      spawnSync('open', [target], { stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      // `start` is a cmd builtin, not an executable; the empty "" is the
+      // (required) window-title argument `start` expects before the target.
+      spawnSync('cmd', ['/c', 'start', '""', target], { stdio: 'ignore', windowsHide: true });
+    } else {
+      spawnSync('xdg-open', [target], { stdio: 'ignore' });
+    }
+  } catch {
+    /* best-effort only */
+  }
+}
+
+// ---- pxpipe gui ------------------------------------------------------------
+
+function printGuiHelp(): void {
+  console.log(`pxpipe gui — local paste-in/compress-out page in your browser
+
+Usage:
+  pxpipe gui [options]
+
+Opens a small local web page: paste bulky text in, get compact PNG pages +
+a ready-to-paste prompt back. Purely local rendering — the page only talks
+to this same local server; no model API is called, no API key is needed,
+nothing is sent anywhere.
+
+Options:
+  --port <n>   listen port (default 47825)
+  --no-open    don't auto-open the browser
+  -h, --help   show this help
+`);
+}
+
+async function runGui(argv: string[]): Promise<void> {
+  let port = 47825;
+  let open = true;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '-h' || a === '--help') {
+      printGuiHelp();
+      return;
+    }
+    if (a === '--no-open') {
+      open = false;
+      continue;
+    }
+    if (a === '--port') {
+      const v = Number(argv[++i]);
+      if (!Number.isFinite(v) || v <= 0) {
+        console.error('[pxpipe gui] --port requires a positive number');
+        process.exit(2);
+      }
+      port = v;
+      continue;
+    }
+    console.error(`[pxpipe gui] unknown option: ${a}`);
+    console.error('[pxpipe gui] run `pxpipe gui --help` for usage');
+    process.exit(2);
+  }
+
+  const server = createServer((req, res) => {
+    Promise.resolve()
+      .then(async () => {
+        const webReq = toWebRequest(req);
+        const webRes = await handleGuiRequest(webReq);
+        if (webRes) {
+          await writeWebResponse(webRes, res);
+          return;
+        }
+        res.statusCode = 404;
+        res.end('not found');
+      })
+      .catch((err) => {
+        console.error('[pxpipe gui] handler error:', err);
+        if (!res.headersSent) res.statusCode = 500;
+        res.end();
+      });
+  });
+
+  // Hard-loopback, no HOST override — this is a private single-user local tool
+  // with no reason to ever be reachable off-host.
+  server.listen(port, '127.0.0.1', () => {
+    const url = `http://127.0.0.1:${port}/`;
+    console.log(`[pxpipe] gui listening on ${url}`);
+    console.log('[pxpipe] fully local — no API key needed, nothing is sent to any model');
+    if (open) openInOsHandler(url);
+  });
+  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
 }
 
 // ---- main ----------------------------------------------------------------
@@ -868,8 +971,12 @@ async function main(): Promise<void> {
     await runExport(argv.slice(1));
     return; // server never starts
   }
-  // No subcommands — pxpipe is just the proxy. Stats / sessions / cleanup
-  // tools live in the dashboard (see http://127.0.0.1:${port}/).
+  if (argv[0] === 'gui') {
+    await runGui(argv.slice(1));
+    return; // gui server runs standalone; the proxy never starts
+  }
+  // No further subcommands — pxpipe is otherwise just the proxy. Stats /
+  // sessions / cleanup tools live in the dashboard (see http://127.0.0.1:${port}/).
   const opts = parseCli(argv);
   // A/B harness passthrough switch (see the `transform` callback below).
   const forcePassthrough = /^(1|true|yes|on)$/i.test(process.env.PXPIPE_DISABLE ?? '');

@@ -53,6 +53,22 @@ normally — pxpipe compresses the *request* only, never the model's output.
 Recent turns stay text; the system prompt, tool docs, and older bulk history
 are imaged.
 
+## GUI — paste in, compress out (no CLI, no proxy, no API key)
+
+For ad hoc use (e.g. compressing a big paste before attaching it to a Claude
+chat) without touching a terminal session or setting up a proxy:
+
+```bash
+npx pxpipe-proxy gui   # opens a page in your browser (Windows or macOS)
+```
+
+Paste bulky text into the box, click **Compress**, then drag the resulting
+PNG pages into your chat and paste the generated prompt alongside them.
+That's the whole workflow. It's **fully local**: the page only ever talks to
+this same local server, no model API is called and no API key is needed —
+see [Privacy & data flow](#privacy-data-flow). Requires only Node.js
+installed once; the only prerequisite either way.
+
 ## Run it inside GitHub
 
 **Codespaces** — open the repo in a Codespace (or VS Code Dev Containers) and
@@ -164,8 +180,10 @@ server, and no phone-home.
   with `PXPIPE_LOG`.
 - **The dashboard is loopback-only** (`127.0.0.1`) by default — it is *not*
   reachable from your network unless you explicitly set `HOST=0.0.0.0`.
-- **The `export` / GitHub Action is a pure local render** — no API key, no model
-  call; nothing leaves your machine or CI runner beyond normal GitHub.
+- **The `export` / `gui` / GitHub Action are pure local renders** — no API key,
+  no model call; nothing leaves your machine or CI runner beyond normal GitHub.
+  `gui` additionally binds hard to `127.0.0.1` with no `HOST` override at all
+  (there's no reason it should ever be reachable off-host).
 
 The only place your data goes is wherever *you* already send it. pxpipe is a
 middleman that runs on your own machine and adds no new destination.
