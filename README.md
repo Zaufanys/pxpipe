@@ -40,12 +40,22 @@ Text needles read fine on both arms; the imaged phrase-count doesn't read on
 Opus — and pxpipe **says so instead of fabricating a number**. That misread
 rate is why Opus is opt-in.
 
+**Pick your path:** [proxy](#try-it-30-seconds) (Claude Code CLI, always-on)
+· [Squint](#gui-paste-in-compress-out-no-cli-no-proxy-no-api-key) (a GUI,
+no CLI at all) · [GitHub Action](#run-it-inside-github) (CI) ·
+[library](#library-use-no-proxy) (your own code).
+
 ## Try it (30 seconds)
 
 ```bash
 npx pxpipe-proxy                                  # proxy on 127.0.0.1:47821
 ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude  # point Claude Code at it
 ```
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/dashboard-dark.jpg">
+  <img src="docs/assets/dashboard-light.jpg" alt="pxpipe dashboard: a recent-requests table showing 8 real compressed requests (claude-fable-5, image, cache hits climbing turn over turn), the image-vs-text breakdown with the actual rendered page thumbnail, and a source inspector showing the real system-prompt text behind it">
+</picture>
 
 Dashboard at <http://127.0.0.1:47821/>: tokens saved, every text→image
 conversion side by side, kill switch, live model chips. Responses stream
@@ -56,18 +66,26 @@ are imaged.
 ## GUI — paste in, compress out (no CLI, no proxy, no API key)
 
 For ad hoc use (e.g. compressing a big paste before attaching it to a Claude
-chat) without touching a terminal session or setting up a proxy:
+chat) without touching a terminal session or setting up a proxy — this is
+**Squint**, pxpipe's local GUI:
 
 ```bash
-npx pxpipe-proxy gui   # opens a page in your browser (Windows or macOS)
+npx pxpipe-proxy gui   # opens a page in your browser (Windows, macOS, or Linux)
 ```
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/gui-results-dark.jpg">
+  <img src="docs/assets/gui-results-light.jpg" alt="Squint, pxpipe's local gui: a paste box, a Compress button, and results showing 18,966 text tokens vs 4,196 image tokens (77.9% saved) across 3 rendered pages, with Copy prompt.txt / Copy factsheet.txt buttons">
+</picture>
 
 Paste bulky text into the box, click **Compress**, then drag the resulting
 PNG pages into your chat and paste the generated prompt alongside them.
 That's the whole workflow. It's **fully local**: the page only ever talks to
-this same local server, no model API is called and no API key is needed —
-see [Privacy & data flow](#privacy-data-flow). Requires only Node.js
-installed once; the only prerequisite either way.
+this same local server, no model API is called and no API key is needed, and
+nothing is ever written to disk — the render lives only in the HTTP response
+until you click Download — see
+[Privacy & data flow](#privacy-data-flow). Requires only Node.js installed
+once; the only prerequisite either way.
 
 ## Run it inside GitHub
 

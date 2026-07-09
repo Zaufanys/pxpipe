@@ -33,6 +33,16 @@ describe('guiHtml', () => {
   it('references the compress endpoint the JS actually calls', () => {
     expect(html).toContain(GUI_COMPRESS_ROUTE);
   });
+
+  it('wires the Cmd/Ctrl+Enter shortcut, the char counter, and the Clear button', () => {
+    // Regression guard for the three interactive niceties — verified live via
+    // a real browser during development; this keeps the wiring from silently
+    // regressing (e.g. an id rename that orphans an addEventListener call).
+    expect(html).toContain('id="charCount"');
+    expect(html).toContain('id="clearBtn"');
+    expect(html).toMatch(/e\.metaKey \|\| e\.ctrlKey/);
+    expect(html).toContain("e.key === 'Enter'");
+  });
 });
 
 describe('runGuiCompress', () => {

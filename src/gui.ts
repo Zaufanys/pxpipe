@@ -106,7 +106,7 @@ export function guiHtml(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pxpipe — local compress</title>
+<title>Squint — local compress (by pxpipe)</title>
 <style>
   :root {
     color-scheme: dark light;
@@ -123,6 +123,7 @@ export function guiHtml(): string {
     padding: 24px; max-width: 900px; margin-inline: auto;
   }
   h1 { font-size: 18px; margin: 0 0 4px; }
+  h1 .byline { color: var(--muted); font-weight: 400; font-size: 14px; }
   p.sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
   textarea {
     width: 100%; min-height: 220px; resize: vertical; padding: 12px;
@@ -137,6 +138,8 @@ export function guiHtml(): string {
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
   button:disabled { opacity: .5; cursor: default; }
   #status { color: var(--muted); font-size: 13px; }
+  .char-count { color: var(--muted); font-size: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
   #error {
     margin-top: 14px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--bad) 15%, transparent);
     border: 1px solid var(--bad); color: var(--bad); font-size: 13px;
@@ -157,13 +160,18 @@ export function guiHtml(): string {
 </style>
 </head>
 <body>
-  <h1>pxpipe — local compress</h1>
+  <h1>Squint <span class="byline">— local compress, by pxpipe</span></h1>
   <p class="sub">Paste bulky text, get compact PNG pages + a ready-to-paste prompt back. 100% local — this page only talks to itself; nothing is sent to any model, ever.</p>
 
   <textarea id="input" placeholder="Paste your bulky content here (logs, a file dump, old context, JSON, anything dense)…"></textarea>
   <div class="row">
+    <span id="charCount" class="char-count"></span>
+  </div>
+  <div class="row">
     <button id="compressBtn" class="primary">Compress</button>
+    <button id="clearBtn" type="button">Clear</button>
     <span id="status"></span>
+    <span class="hint">⌘/Ctrl + Enter to compress</span>
   </div>
   <div id="error" hidden></div>
 
@@ -187,11 +195,19 @@ export function guiHtml(): string {
 (function () {
   var ta = document.getElementById('input');
   var btn = document.getElementById('compressBtn');
+  var clearBtn = document.getElementById('clearBtn');
   var status = document.getElementById('status');
   var errorBox = document.getElementById('error');
   var results = document.getElementById('results');
+  var charCount = document.getElementById('charCount');
   var lastPrompt = '';
   var lastFactsheet = '';
+
+  function updateCharCount() {
+    var n = ta.value.length;
+    charCount.textContent = n > 0 ? fmt(n) + ' chars' : '';
+  }
+  ta.addEventListener('input', updateCharCount);
 
   function flash(el, msg) {
     var orig = el.textContent;
@@ -232,9 +248,9 @@ export function guiHtml(): string {
     results.hidden = false;
   }
 
-  btn.addEventListener('click', function () {
+  function runCompress() {
     var text = ta.value;
-    if (!text.trim()) return;
+    if (!text.trim() || btn.disabled) return;
     btn.disabled = true;
     status.textContent = 'Compressing…';
     errorBox.hidden = true;
@@ -257,6 +273,22 @@ export function guiHtml(): string {
         btn.disabled = false;
         status.textContent = '';
       });
+  }
+
+  btn.addEventListener('click', runCompress);
+  ta.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      runCompress();
+    }
+  });
+
+  clearBtn.addEventListener('click', function () {
+    ta.value = '';
+    updateCharCount();
+    errorBox.hidden = true;
+    results.hidden = true;
+    ta.focus();
   });
 
   document.getElementById('copyPromptBtn').addEventListener('click', function (e) {
