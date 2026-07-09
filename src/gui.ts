@@ -106,15 +106,15 @@ export function guiHtml(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pxpipe — local compress</title>
+<title>Squint — local compress (by pxpipe)</title>
 <style>
   :root {
     color-scheme: dark light;
     --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8ec;
-    --muted: #8b93a3; --accent: #7aa2ff; --accent-text: #0f1115; --good: #5fd28d; --bad: #ff6b6b;
+    --muted: #8b93a3; --accent: #7aa2ff; --accent-text: #0f1115; --good: #5fd28d; --bad: #ff6b6b; --warn: #e0a940;
   }
   @media (prefers-color-scheme: light) {
-    :root { --bg:#f6f7f9; --panel:#fff; --border:#e2e5eb; --text:#1a1d24; --muted:#5b6272; --accent:#2f5fdc; --accent-text:#fff; --good:#1c8a52; --bad:#c0392b; }
+    :root { --bg:#f6f7f9; --panel:#fff; --border:#e2e5eb; --text:#1a1d24; --muted:#5b6272; --accent:#2f5fdc; --accent-text:#fff; --good:#1c8a52; --bad:#c0392b; --warn:#9a6b0a; }
   }
   * { box-sizing: border-box; }
   body {
@@ -123,6 +123,7 @@ export function guiHtml(): string {
     padding: 24px; max-width: 900px; margin-inline: auto;
   }
   h1 { font-size: 18px; margin: 0 0 4px; }
+  h1 .byline { color: var(--muted); font-weight: 400; font-size: 14px; }
   p.sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
   textarea {
     width: 100%; min-height: 220px; resize: vertical; padding: 12px;
@@ -137,9 +138,15 @@ export function guiHtml(): string {
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
   button:disabled { opacity: .5; cursor: default; }
   #status { color: var(--muted); font-size: 13px; }
+  .char-count { color: var(--muted); font-size: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
   #error {
     margin-top: 14px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--bad) 15%, transparent);
     border: 1px solid var(--bad); color: var(--bad); font-size: 13px;
+  }
+  .warn {
+    margin-bottom: 14px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--warn) 15%, transparent);
+    border: 1px solid var(--warn); color: var(--warn); font-size: 13px;
   }
   #results { margin-top: 28px; }
   .stats { display: flex; gap: 22px; flex-wrap: wrap; padding: 14px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
@@ -157,17 +164,23 @@ export function guiHtml(): string {
 </style>
 </head>
 <body>
-  <h1>pxpipe — local compress</h1>
+  <h1>Squint <span class="byline">— local compress, by pxpipe</span></h1>
   <p class="sub">Paste bulky text, get compact PNG pages + a ready-to-paste prompt back. 100% local — this page only talks to itself; nothing is sent to any model, ever.</p>
 
   <textarea id="input" placeholder="Paste your bulky content here (logs, a file dump, old context, JSON, anything dense)…"></textarea>
   <div class="row">
+    <span id="charCount" class="char-count"></span>
+  </div>
+  <div class="row">
     <button id="compressBtn" class="primary">Compress</button>
+    <button id="clearBtn" type="button">Clear</button>
     <span id="status"></span>
+    <span class="hint">⌘/Ctrl + Enter to compress</span>
   </div>
   <div id="error" hidden></div>
 
   <div id="results" hidden>
+    <div id="truncatedWarn" class="warn" hidden></div>
     <div class="stats">
       <div class="stat"><div class="k">Text tokens</div><div class="v" id="statTextTokens">–</div></div>
       <div class="stat"><div class="k">Image tokens</div><div class="v" id="statImageTokens">–</div></div>
@@ -187,11 +200,24 @@ export function guiHtml(): string {
 (function () {
   var ta = document.getElementById('input');
   var btn = document.getElementById('compressBtn');
+  var clearBtn = document.getElementById('clearBtn');
   var status = document.getElementById('status');
   var errorBox = document.getElementById('error');
   var results = document.getElementById('results');
+  var charCount = document.getElementById('charCount');
   var lastPrompt = '';
   var lastFactsheet = '';
+  // Bumped on every new compress AND on Clear, so a response that arrives after the user
+  // moved on (cleared the form, or started a newer compress) is dropped instead of
+  // silently re-populating stale results/copy buttons or popping a stale error banner.
+  var requestGen = 0;
+
+  function updateCharCount() {
+    var n = ta.value.length;
+    charCount.textContent = n > 0 ? fmt(n) + ' chars' : '';
+  }
+  ta.addEventListener('input', updateCharCount);
+  updateCharCount(); // sync on load — a bfcache-restored textarea can have a value already
 
   function flash(el, msg) {
     var orig = el.textContent;
@@ -203,6 +229,13 @@ export function guiHtml(): string {
 
   function render(data) {
     var m = data.manifest, tr = m.tokenReport;
+    var warnBox = document.getElementById('truncatedWarn');
+    if (data.truncated) {
+      warnBox.textContent = 'Your paste was longer than the 2,000,000-char limit — it was truncated before compressing, so these results only cover the first part of it.';
+      warnBox.hidden = false;
+    } else {
+      warnBox.hidden = true;
+    }
     document.getElementById('statTextTokens').textContent = fmt(tr.textTokens);
     document.getElementById('statImageTokens').textContent = fmt(tr.imageTokens);
     document.getElementById('statSaved').textContent =
@@ -232,9 +265,12 @@ export function guiHtml(): string {
     results.hidden = false;
   }
 
-  btn.addEventListener('click', function () {
+  function runCompress() {
     var text = ta.value;
-    if (!text.trim()) return;
+    if (!text.trim() || btn.disabled) return;
+    // Captured so a response that arrives after Clear (which bumps requestGen) is
+    // recognized as stale and ignored instead of resurrecting cleared results.
+    var myGen = ++requestGen;
     btn.disabled = true;
     status.textContent = 'Compressing…';
     errorBox.hidden = true;
@@ -246,17 +282,39 @@ export function guiHtml(): string {
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (r) {
+        if (myGen !== requestGen) return; // superseded by Clear or a newer compress
         if (!r.ok) throw new Error(r.data && r.data.error ? r.data.error : 'compress failed');
         render(r.data);
       })
       .catch(function (e) {
+        if (myGen !== requestGen) return;
         errorBox.textContent = 'Error: ' + e.message;
         errorBox.hidden = false;
       })
       .finally(function () {
+        if (myGen !== requestGen) return;
         btn.disabled = false;
         status.textContent = '';
       });
+  }
+
+  btn.addEventListener('click', runCompress);
+  ta.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      runCompress();
+    }
+  });
+
+  clearBtn.addEventListener('click', function () {
+    requestGen++; // invalidate any in-flight compress response
+    ta.value = '';
+    updateCharCount();
+    errorBox.hidden = true;
+    results.hidden = true;
+    btn.disabled = false;
+    status.textContent = '';
+    ta.focus();
   });
 
   document.getElementById('copyPromptBtn').addEventListener('click', function (e) {

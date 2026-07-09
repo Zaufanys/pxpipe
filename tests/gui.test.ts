@@ -33,6 +33,30 @@ describe('guiHtml', () => {
   it('references the compress endpoint the JS actually calls', () => {
     expect(html).toContain(GUI_COMPRESS_ROUTE);
   });
+
+  it('wires the Cmd/Ctrl+Enter shortcut, the char counter, and the Clear button', () => {
+    // Regression guard for the three interactive niceties — verified live via
+    // a real browser during development; this keeps the wiring from silently
+    // regressing (e.g. an id rename that orphans an addEventListener call).
+    expect(html).toContain('id="charCount"');
+    expect(html).toContain('id="clearBtn"');
+    expect(html).toMatch(/e\.metaKey \|\| e\.ctrlKey/);
+    expect(html).toContain("e.key === 'Enter'");
+  });
+
+  it('guards against a stale in-flight response after Clear (requestGen check)', () => {
+    // Regression guard: Clear must bump requestGen, and both the success and error
+    // paths of runCompress must check it before touching the DOM — verified live via
+    // Playwright network-delay interception during development (a response arriving
+    // after Clear must not resurrect the cleared results or pop a stale error banner).
+    expect(html).toContain('requestGen++');
+    expect(html).toMatch(/myGen !== requestGen/);
+  });
+
+  it('surfaces a truncated-input warning in the page markup', () => {
+    expect(html).toContain('id="truncatedWarn"');
+    expect(html).toContain('data.truncated');
+  });
 });
 
 describe('runGuiCompress', () => {

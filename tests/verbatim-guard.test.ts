@@ -72,6 +72,27 @@ describe('verbatimRiskVerdict — secrets', () => {
     expect(isVerbatimRisk(cat('API_KEY: ', '9f8e7d6c5b4a3f2e1d0c9b8a'))).toBe(true);
     expect(isVerbatimRisk(cat('Authorization: Bearer ', 'abc123DEF456ghi789JKL'))).toBe(true);
   });
+
+  it('pins a pure-alphabetic or pure-numeric assigned value ≥16 chars (regression)', () => {
+    // A prior version's entropy gate required BOTH a letter and a digit (or ≥24 chars),
+    // so a pure-alpha or pure-numeric secret in the 16-23 char range slipped through
+    // undetected even sitting right after a strong credential keyword.
+    expect(isVerbatimRisk(cat('client_secret: "', 'abcdefghijklmnopqrst', '"'))).toBe(true);
+    expect(isVerbatimRisk(cat('api_key: ', '12345678901234567890'))).toBe(true);
+  });
+
+  it('pins a token embedded in a long whitespace-free run (regression)', () => {
+    // A prior version skipped any whitespace-free chunk over 512 chars entirely before
+    // running the opaque-token patterns, so a real key embedded in a longer unbroken
+    // run (a minified JSON blob, a long query string) passed through undetected — even
+    // though the identical token alone was correctly caught. Patterns are now verified
+    // ReDoS-safe at any length (see the ReDoS-safety block below), so nothing is skipped.
+    const padding = 'x'.repeat(480);
+    const ghToken = cat('ghp', '_', 'A1b2C3d4E5f6G7h8I9j0'.repeat(2));
+    const blob = cat('{"', padding, '":"', ghToken, '"}');
+    expect(blob.length).toBeGreaterThan(512);
+    expect(isVerbatimRisk(blob)).toBe(true);
+  });
 });
 
 describe('verbatimRiskVerdict — negatives (savings preserved)', () => {
