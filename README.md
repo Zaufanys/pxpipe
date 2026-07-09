@@ -53,6 +53,22 @@ normally — pxpipe compresses the *request* only, never the model's output.
 Recent turns stay text; the system prompt, tool docs, and older bulk history
 are imaged.
 
+## GUI — paste in, compress out (no CLI, no proxy, no API key)
+
+For ad hoc use (e.g. compressing a big paste before attaching it to a Claude
+chat) without touching a terminal session or setting up a proxy:
+
+```bash
+npx pxpipe-proxy gui   # opens a page in your browser (Windows or macOS)
+```
+
+Paste bulky text into the box, click **Compress**, then drag the resulting
+PNG pages into your chat and paste the generated prompt alongside them.
+That's the whole workflow. It's **fully local**: the page only ever talks to
+this same local server, no model API is called and no API key is needed —
+see [Privacy & data flow](#privacy-data-flow). Requires only Node.js
+installed once; the only prerequisite either way.
+
 ## Run it inside GitHub
 
 **Codespaces** — open the repo in a Codespace (or VS Code Dev Containers) and
@@ -143,6 +159,34 @@ caching keeps working), and forwards. A 1928×1928 image costs ≈4,761 vision
 tokens and holds ≈92,000 chars, so text wins only above ~19 chars/token —
 Claude Code traffic runs ~1.91 (N=391). A per-request estimator decides;
 sparse prose stays text. Events log to `~/.pxpipe/events.jsonl`.
+
+## Privacy & data flow
+
+pxpipe is **local and private by design**. There is no account, no pxpipe-side
+server, and no phone-home.
+
+- **Library use makes zero network calls.** The transform / render / guard /
+  rehydrate functions are pure — data in, data out, inside your own process.
+  pxpipe never sends your content anywhere; *your* code decides where the
+  transformed request goes.
+- **The proxy contacts exactly one destination: your model provider.** The whole
+  codebase has two outbound `fetch()` calls, both to the upstream API you already
+  use (`api.anthropic.com` / `api.openai.com`, or whatever you configure) — the
+  request forward and a free `count_tokens` probe to that *same* endpoint. No
+  third host is ever contacted.
+- **No telemetry.** No analytics SDK, no Sentry/PostHog/Segment, nothing. The
+  only "logging" is local metrics written to `~/.pxpipe/events.jsonl` on your
+  machine, which you own and can delete (`rm -rf ~/.pxpipe`). Override the path
+  with `PXPIPE_LOG`.
+- **The dashboard is loopback-only** (`127.0.0.1`) by default — it is *not*
+  reachable from your network unless you explicitly set `HOST=0.0.0.0`.
+- **The `export` / `gui` / GitHub Action are pure local renders** — no API key,
+  no model call; nothing leaves your machine or CI runner beyond normal GitHub.
+  `gui` additionally binds hard to `127.0.0.1` with no `HOST` override at all
+  (there's no reason it should ever be reachable off-host).
+
+The only place your data goes is wherever *you* already send it. pxpipe is a
+middleman that runs on your own machine and adds no new destination.
 
 ## Library use (no proxy)
 
