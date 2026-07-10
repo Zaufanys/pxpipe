@@ -78,14 +78,14 @@ npx pxpipe-proxy gui   # opens a page in your browser (Windows, macOS, or Linux)
   <img src="docs/assets/gui-results-light.jpg" alt="Squint, pxpipe's local gui: a paste box, a Compress button, and results showing 18,966 text tokens vs 4,196 image tokens (77.9% saved) across 3 rendered pages, with Copy prompt.txt / Copy factsheet.txt buttons">
 </picture>
 
-Paste bulky text into the box, click **Compress**, then drag the resulting
-PNG pages into your chat and paste the generated prompt alongside them.
-That's the whole workflow. It's **fully local**: the page only ever talks to
-this same local server, no model API is called and no API key is needed, and
-nothing is ever written to disk — the render lives only in the HTTP response
-until you click Download — see
-[Privacy & data flow](#privacy-data-flow). Requires only Node.js installed
-once; the only prerequisite either way.
+Paste bulky text into the box (or **drag a text file** onto it), click
+**Compress**, then **Copy image** on each page and paste it straight into your
+chat — no download step — and paste the generated prompt alongside them. That's
+the whole workflow. It's **fully local**: the page only ever talks to this same
+local server, no model API is called and no API key is needed, and nothing is
+ever written to disk — the render lives only in the HTTP response until you copy
+or download it — see [Privacy & data flow](#privacy-data-flow). Requires only
+Node.js installed once; the only prerequisite either way.
 
 ## Run it inside GitHub
 

@@ -57,6 +57,25 @@ describe('guiHtml', () => {
     expect(html).toContain('id="truncatedWarn"');
     expect(html).toContain('data.truncated');
   });
+
+  it('wires drag-and-drop file loading onto the textarea', () => {
+    // Regression guard — verified live via a synthetic DataTransfer drop in a real
+    // browser during development. Must preventDefault the drop (so the browser doesn't
+    // navigate to the file) and read the dropped file's text into the textarea.
+    expect(html).toMatch(/addEventListener\('drop'/);
+    expect(html).toContain('readAsText');
+    expect(html).toContain('dataTransfer.files');
+  });
+
+  it('offers a clipboard "Copy image" path gated on ClipboardItem support', () => {
+    // Regression guard — verified live by reading the clipboard back as image/png in a
+    // real browser. The button is only rendered when the browser can write images
+    // (canCopyImage), and copies a PNG blob built from the page's base64.
+    expect(html).toContain('canCopyImage');
+    expect(html).toContain('ClipboardItem');
+    expect(html).toContain('Copy image');
+    expect(html).toContain("'image/png'");
+  });
 });
 
 describe('runGuiCompress', () => {

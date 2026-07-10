@@ -128,8 +128,9 @@ export function guiHtml(): string {
   textarea {
     width: 100%; min-height: 220px; resize: vertical; padding: 12px;
     background: var(--panel); color: var(--text); border: 1px solid var(--border);
-    border-radius: 8px; font: inherit; font-size: 13px;
+    border-radius: 8px; font: inherit; font-size: 13px; transition: border-color .12s, background .12s;
   }
+  textarea.dragover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
   .row { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
   button {
     font: inherit; font-size: 13px; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border);
@@ -157,6 +158,8 @@ export function guiHtml(): string {
   .page-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); }
   .page-card img { width: 100%; border-radius: 4px; border: 1px solid var(--border); background: #fff; }
   .page-cap { color: var(--muted); font-size: 11px; margin: 8px 0 6px; }
+  .card-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .card-actions button { padding: 4px 10px; font-size: 12px; }
   .dl-link { font-size: 12px; color: var(--accent); text-decoration: none; }
   .dl-link:hover { text-decoration: underline; }
   footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
@@ -167,7 +170,7 @@ export function guiHtml(): string {
   <h1>Squint <span class="byline">— local compress, by pxpipe</span></h1>
   <p class="sub">Paste bulky text, get compact PNG pages + a ready-to-paste prompt back. 100% local — this page only talks to itself; nothing is sent to any model, ever.</p>
 
-  <textarea id="input" placeholder="Paste your bulky content here (logs, a file dump, old context, JSON, anything dense)…"></textarea>
+  <textarea id="input" placeholder="Paste your bulky content here — or drag a text file onto this box (logs, a file dump, old context, JSON, anything dense)…"></textarea>
   <div class="row">
     <span id="charCount" class="char-count"></span>
   </div>
@@ -194,7 +197,7 @@ export function guiHtml(): string {
     <div id="pageGrid"></div>
   </div>
 
-  <footer>Next: drag the page-*.png files into your chat, then paste prompt.txt as your message.</footer>
+  <footer>Next: <b>Copy image</b> on each page and paste it straight into your chat (or Download and drag the files in), then paste <b>prompt.txt</b> as your message.</footer>
 
 <script>
 (function () {
@@ -227,6 +230,63 @@ export function guiHtml(): string {
 
   function fmt(n) { return n.toLocaleString('en-US'); }
 
+  // Whether this browser can put an image on the clipboard (Chrome/Edge/Safari on
+  // localhost can; older/Firefox may not). Gates the "Copy image" button so we never
+  // show a control that can't work.
+  var canCopyImage = typeof ClipboardItem !== 'undefined' &&
+    !!(navigator.clipboard && navigator.clipboard.write);
+
+  function b64ToBlob(b64, type) {
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: type });
+  }
+
+  function copyImage(b64, btn) {
+    try {
+      var item = new ClipboardItem({ 'image/png': b64ToBlob(b64, 'image/png') });
+      navigator.clipboard.write([item])
+        .then(function () { flash(btn, 'Copied!'); })
+        .catch(function () { flash(btn, 'Copy failed'); });
+    } catch (e) {
+      flash(btn, 'Copy failed');
+    }
+  }
+
+  // Load a dragged-in file's text into the textarea. Text files only; capped so a
+  // huge/binary drop can't hang the tab. (readAsText on binary yields garbage but is
+  // harmless — Compress just makes a noisy image — so the size cap is the real guard.)
+  var MAX_FILE_BYTES = 8 * 1024 * 1024;
+  function loadFile(file) {
+    if (!file) return;
+    if (file.size > MAX_FILE_BYTES) {
+      errorBox.textContent = 'That file is ' + fmt(file.size) + ' bytes — too big to load here (cap ' +
+        fmt(MAX_FILE_BYTES) + '). Open it and paste the part you need instead.';
+      errorBox.hidden = false;
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      ta.value = typeof reader.result === 'string' ? reader.result : '';
+      updateCharCount();
+      errorBox.hidden = true;
+      ta.focus();
+    };
+    reader.onerror = function () { errorBox.textContent = 'Could not read that file.'; errorBox.hidden = false; };
+    reader.readAsText(file);
+  }
+
+  ta.addEventListener('dragover', function (e) { e.preventDefault(); ta.classList.add('dragover'); });
+  ta.addEventListener('dragleave', function () { ta.classList.remove('dragover'); });
+  ta.addEventListener('drop', function (e) {
+    e.preventDefault();
+    ta.classList.remove('dragover');
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      loadFile(e.dataTransfer.files[0]);
+    }
+  });
+
   function render(data) {
     var m = data.manifest, tr = m.tokenReport;
     var warnBox = document.getElementById('truncatedWarn');
@@ -257,9 +317,20 @@ export function guiHtml(): string {
       var cap = document.createElement('div');
       cap.className = 'page-cap';
       cap.textContent = a.filename + ' · ' + a.width + '×' + a.height;
+      var actions = document.createElement('div');
+      actions.className = 'card-actions';
+      if (canCopyImage) {
+        var copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.textContent = 'Copy image';
+        copyBtn.title = 'Copy this page to the clipboard, then paste it straight into your chat';
+        (function (b64, b) { b.addEventListener('click', function () { copyImage(b64, b); }); })(a.base64, copyBtn);
+        actions.appendChild(copyBtn);
+      }
       var dl = document.createElement('a');
       dl.href = src; dl.download = a.filename; dl.className = 'dl-link'; dl.textContent = 'Download';
-      card.appendChild(img); card.appendChild(cap); card.appendChild(dl);
+      actions.appendChild(dl);
+      card.appendChild(img); card.appendChild(cap); card.appendChild(actions);
       grid.appendChild(card);
     });
     results.hidden = false;
