@@ -54,14 +54,26 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude  # point Claude Code at it
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/dashboard-dark.jpg">
-  <img src="docs/assets/dashboard-light.jpg" alt="pxpipe dashboard: a recent-requests table showing 8 real compressed requests (claude-fable-5, image, cache hits climbing turn over turn), the image-vs-text breakdown with the actual rendered page thumbnail, and a source inspector showing the real system-prompt text behind it">
+  <img src="docs/assets/dashboard-light.jpg" alt="pxpipe dashboard: a live-savings hero reading 64% fewer tokens after caching, four KPI tiles (requests, input tokens saved, estimated saved, cost per request), model chips, and a recent-requests table with a per-request image-vs-text breakdown">
 </picture>
 
-Dashboard at <http://127.0.0.1:47821/>: tokens saved, every text→image
-conversion side by side, kill switch, live model chips. Responses stream
-normally — pxpipe compresses the *request* only, never the model's output.
-Recent turns stay text; the system prompt, tool docs, and older bulk history
-are imaged.
+<sub>The dashboard at <b>http://127.0.0.1:47821/</b> — shown with a sample session. Every request, what became an image vs. what stayed text, the honest token math, a live kill switch and model chips. It compresses the <i>request</i> only, never the model's output; recent turns stay text, while the system prompt, tool docs, and older bulk history are imaged.</sub>
+
+<br>
+
+It's fully responsive — the same dashboard on a phone:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/dashboard-mobile-dark.jpg">
+    <img src="docs/assets/dashboard-mobile-light.jpg" width="300" alt="pxpipe dashboard on a 390px phone screen: controls stacked, KPI tiles two per row, the savings hero, and the recent-requests table scrolling within its own card">
+  </picture>
+</p>
+
+> **Click through it yourself:** [`docs/dashboard-preview.html`](docs/dashboard-preview.html)
+> is a self-contained interactive preview (open it in any browser) — toggle the
+> theme, flip the kill switch, and click any request to see what became an image
+> vs. what stayed text.
 
 ## GUI — paste in, compress out (no CLI, no proxy, no API key)
 

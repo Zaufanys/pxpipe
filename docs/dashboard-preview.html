@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pxpipe dashboard — interactive mockup</title>
+<style>
+  /* ---- tokens: the real pxpipe "flame" design system (warm cream / warm-black,
+       ember-orange accent). Light is the default; dark is applied both from the
+       viewer's OS preference and from the in-page theme toggle. ---- */
+  :root {
+    --bg: #faf6f2; --surface: #ffffff; --surface-2: #fbf4ee;
+    --border: #efe5db; --border-strong: #e4d6c8;
+    --ink: #241f1b; --ink-2: #5d534a; --muted: #9b9189;
+    --flame: #ff5a1f; --flame-strong: #e8420a; --flame-ink: #bd3a08; --flame-tint: #fff1ea;
+    --good: #1f9d57; --good-tint: #e7f6ee; --bad: #d8483b; --bad-tint: #fcebe9;
+    --warn: #b7791f; --warn-tint: #fbf0db;
+    --img: #ff5a1f; --img-ink: #bd3a08; --img-tint: #fff1ea;
+    --txt: #2f7db0; --txt-ink: #1f5f8b; --txt-tint: #e9f3fb;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(60,35,15,.05), 0 8px 24px rgba(60,35,15,.05);
+    --mono: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    color-scheme: light;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17120f; --surface: #211a15; --surface-2: #2a211b;
+      --border: #352a22; --border-strong: #46382e;
+      --ink: #f6efe8; --ink-2: #cabbac; --muted: #9a8c7d;
+      --flame: #ff6a33; --flame-strong: #e8420a; --flame-ink: #ff9a63; --flame-tint: #3a2318;
+      --good: #3fbd76; --good-tint: #15291f; --bad: #f0645a; --bad-tint: #341b18;
+      --warn: #d99a3a; --warn-tint: #33260f;
+      --img: #ff6a33; --img-ink: #ff9a63; --img-tint: #3a2318;
+      --txt: #5aa3d6; --txt-ink: #8cc3ea; --txt-tint: #142631;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.45);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17120f; --surface: #211a15; --surface-2: #2a211b;
+    --border: #352a22; --border-strong: #46382e;
+    --ink: #f6efe8; --ink-2: #cabbac; --muted: #9a8c7d;
+    --flame: #ff6a33; --flame-strong: #e8420a; --flame-ink: #ff9a63; --flame-tint: #3a2318;
+    --good: #3fbd76; --good-tint: #15291f; --bad: #f0645a; --bad-tint: #341b18;
+    --warn: #d99a3a; --warn-tint: #33260f;
+    --img: #ff6a33; --img-ink: #ff9a63; --img-tint: #3a2318;
+    --txt: #5aa3d6; --txt-ink: #8cc3ea; --txt-tint: #142631;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.45);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; max-width: 100%; }
+  .app {
+    background: var(--bg); color: var(--ink-2); min-height: 100vh;
+    padding: 22px 26px 64px; font: 14px/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  .app b, .app strong { color: var(--ink); }
+  .good { color: var(--good); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+
+  /* mockup ribbon — honest label that this is sample data */
+  .demo-note { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600;
+    color: var(--warn); background: var(--warn-tint); border: 1px solid var(--warn);
+    border-radius: 999px; padding: 3px 11px; }
+  .demo-note::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+
+  /* topbar */
+  .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+    flex-wrap: wrap; margin-bottom: 14px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .flame-dot { width: 14px; height: 14px; border-radius: 50%; flex: none;
+    background: radial-gradient(circle at 35% 30%, #ffd0a8, var(--flame) 55%, var(--flame-strong));
+    box-shadow: 0 0 0 4px var(--flame-tint); }
+  .wordmark { font-size: 22px; font-weight: 800; color: var(--ink); letter-spacing: -0.02em; }
+  .tagline { font-size: 12.5px; color: var(--muted); margin-top: 1px; max-width: 460px; }
+  .controls { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+  .switch { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
+  .switch-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px; }
+  .switch-state.on { color: var(--good); background: var(--good-tint); }
+  .switch-state.off { color: var(--bad); background: var(--bad-tint); }
+  .switch-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .btn { background: var(--surface); color: var(--ink); border: 1px solid var(--border-strong);
+    padding: 6px 13px; cursor: pointer; border-radius: 8px; font: inherit; font-size: 12px; font-weight: 600;
+    box-shadow: var(--shadow); display: inline-flex; align-items: center; gap: 6px; line-height: 1.2; }
+  .btn:hover { border-color: var(--flame); color: var(--flame-ink); }
+  .btn:focus-visible { outline: 2px solid var(--flame); outline-offset: 2px; }
+  .hint { color: var(--muted); font-size: 11px; }
+
+  /* model chips */
+  .models { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 18px; }
+  .models-label { color: var(--ink-2); font-size: 12px; font-weight: 600; }
+  .chip { background: var(--surface); color: var(--ink-2); border: 1px solid var(--border-strong);
+    border-radius: 999px; padding: 4px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+  .chip:hover { border-color: var(--flame); color: var(--flame-ink); }
+  .chip:focus-visible { outline: 2px solid var(--flame); outline-offset: 2px; }
+  .chip.on { background: var(--flame-tint); color: var(--flame-ink); border-color: var(--flame); font-weight: 600; }
+
+  /* session hero */
+  .hero { background: linear-gradient(135deg, var(--flame-tint), var(--surface) 60%);
+    border: 1px solid var(--border); border-left: 4px solid var(--flame); border-radius: var(--radius);
+    padding: 20px 24px; box-shadow: var(--shadow); margin-bottom: 16px; }
+  .hero-eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px; }
+  .hero-headline { font-size: 28px; font-weight: 700; color: var(--ink); letter-spacing: -0.02em;
+    line-height: 1.1; text-wrap: balance; }
+  .hero-num { font-size: 56px; font-weight: 800; line-height: 1; margin-right: 8px;
+    background: linear-gradient(135deg, #ff9a4d, var(--flame) 55%, var(--flame-strong));
+    -webkit-background-clip: text; background-clip: text; color: transparent; font-variant-numeric: tabular-nums; }
+  .hero-sub { font-size: 14.5px; color: var(--ink-2); margin-top: 12px; max-width: 720px; }
+  .hero-meta { font-size: 12px; color: var(--muted); margin-top: 10px; padding-top: 10px;
+    border-top: 1px dashed var(--border-strong); }
+  .app.compress-off .hero { filter: grayscale(.7) opacity(.72); }
+
+  /* stat strip — 4 across desktop, 2 per row on mobile (per spec) */
+  .strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
+  .tile-label { font-size: 11.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 8px;
+    display: flex; align-items: center; gap: 5px; }
+  .tile-value { font-size: 26px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em; line-height: 1.1; }
+  .tile-value.pos { color: var(--good); }
+  .tile-sub { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+  .q { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
+    border-radius: 50%; background: var(--surface-2); border: 1px solid var(--border-strong);
+    color: var(--muted); font-size: 9px; font-weight: 700; cursor: help; }
+
+  /* drawer */
+  .drawer { margin: 0 0 14px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .drawer > summary { cursor: pointer; user-select: none; list-style: none; padding: 12px 16px;
+    font-size: 13px; font-weight: 600; color: var(--flame-ink); display: flex; align-items: center; gap: 8px; }
+  .drawer > summary::-webkit-details-marker { display: none; }
+  .drawer > summary::before { content: '▸'; color: var(--flame); font-size: 11px; }
+  .drawer[open] > summary::before { content: '▾'; }
+  .drawer > summary:hover { background: var(--surface-2); }
+  .math-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 0 16px 16px; }
+  .math-block h4 { margin: 0 0 6px; font-size: 12px; color: var(--ink); }
+  .formula { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; font: 11px/1.55 var(--mono); color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
+  .formula .k { color: var(--muted); } .formula .v { color: var(--ink); } .formula .op { color: var(--flame); }
+  .formula .src { color: var(--muted); font-size: 10px; display: block; margin-top: 7px;
+    border-top: 1px solid var(--border); padding-top: 6px; }
+
+  .updated { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+
+  /* sections */
+  .section { margin-top: 26px; }
+  .section-head { font-size: 14px; font-weight: 700; color: var(--ink); margin: 0 0 12px;
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .section-sub { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 18px; box-shadow: var(--shadow); min-width: 0; }
+  .card-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin: 0 0 12px; }
+  .card-head.spaced { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+  /* x-ray split */
+  .xray { display: grid; grid-template-columns: 1.15fr 1fr; gap: 16px; align-items: start; }
+
+  /* wide tables scroll inside their own container; page never scrolls sideways */
+  .table-scroll { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
+  table.rtable, table.dtable { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.rtable { min-width: max-content; }            /* wide table scrolls in its container */
+  .dtable td:first-child { width: 1px; white-space: nowrap; padding-right: 24px; }  /* label shrinks, value fills right */
+  .rtable th, .dtable th { text-align: left; color: var(--muted); font-weight: 600; padding: 7px 8px;
+    border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
+  .rtable td, .dtable td { padding: 7px 8px; border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums; vertical-align: middle; color: var(--ink-2); white-space: nowrap; }
+  .rtable tr:last-child td, .dtable tr:last-child td { border-bottom: none; }
+  .rtable tbody tr { cursor: pointer; }
+  .rtable tbody tr:hover { background: var(--surface-2); }
+  .rtable tbody tr.sel { background: var(--flame-tint); }
+  .rtable tbody tr:focus-visible { outline: 2px solid var(--flame); outline-offset: -2px; }
+  th.num, td.num { text-align: right; }
+  td.pos { color: var(--good); font-weight: 600; }
+  .endp { color: var(--ink); font-family: var(--mono); font-size: 11px; }
+  .pill { display: inline-block; min-width: 38px; text-align: center; font-size: 11px; font-weight: 700;
+    padding: 2px 8px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+  .pill-good { background: var(--good-tint); color: var(--good); }
+  .badge { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+  .badge-img { background: var(--img-tint); color: var(--img-ink); }
+  .badge-txt { background: var(--txt-tint); color: var(--txt-ink); }
+  .row-view { color: var(--flame-ink); font-weight: 600; text-decoration: none; white-space: nowrap; }
+
+  /* image vs text breakdown */
+  .ctx-headline { font-size: 13px; color: var(--ink-2); margin-bottom: 10px; }
+  .ctx-title { display: inline-block; font-weight: 700; color: var(--ink); margin-right: 6px; }
+  .ctx-big { font-size: 22px; font-weight: 800; color: var(--flame); font-variant-numeric: tabular-nums; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .split-col { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface); }
+  .split-img { border-top: 3px solid var(--img); background: linear-gradient(180deg, var(--img-tint), var(--surface) 40%); }
+  .split-txt { border-top: 3px solid var(--txt); background: linear-gradient(180deg, var(--txt-tint), var(--surface) 40%); }
+  .split-head { font-size: 12px; font-weight: 700; color: var(--ink); margin-bottom: 8px; display: flex;
+    flex-direction: column; gap: 2px; }
+  .split-sum { font-size: 10.5px; font-weight: 600; color: var(--muted); }
+  .ctx-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 4px 0;
+    border-bottom: 1px solid var(--border); }
+  .ctx-row:last-of-type { border-bottom: none; }
+  .ctx-lbl { color: var(--ink-2); } .ctx-val { color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .split-note { font-size: 10.5px; color: var(--muted); margin-top: 7px; }
+
+  /* the rendered "image" (a CSS stand-in for the PNG the model reads) */
+  .pages-title { font-size: 11px; color: var(--ink-2); margin: 14px 0 6px; }
+  .render {
+    background: #fff; border: 1px solid var(--border-strong); border-radius: 6px; padding: 7px 8px;
+    max-height: 230px; overflow: hidden; position: relative; cursor: pointer;
+    font: 4.4px/1.32 var(--mono); color: #23324a; white-space: pre-wrap; word-break: break-all;
+    letter-spacing: .1px;
+  }
+  .render:hover { border-color: var(--flame); }
+  .render::after { content: ''; position: absolute; inset: auto 0 0 0; height: 42px;
+    background: linear-gradient(180deg, transparent, #fff); }
+  .render-cap { font-size: 11px; color: var(--muted); margin-top: 8px; display: flex; gap: 10px;
+    flex-wrap: wrap; align-items: center; }
+  .src-pane { margin: 8px 0 0; max-height: 190px; overflow: auto; background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px; font: 11px/1.45 var(--mono);
+    white-space: pre-wrap; word-break: break-word; color: var(--ink-2); scrollbar-width: thin; }
+
+  /* sessions bars */
+  .status { margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+  .bars { display: flex; flex-direction: column; gap: 8px; }
+  .bar-row { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+  .bar-label { width: 160px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--ink); font-family: var(--mono); font-size: 11px; }
+  .bar-track { flex: 1; min-width: 0; height: 16px; background: var(--surface-2); border-radius: 5px;
+    overflow: hidden; border: 1px solid var(--border); }
+  .bar-fill { height: 100%; border-radius: 5px 0 0 5px; background: linear-gradient(90deg, #ffa766, var(--flame)); }
+  .bar-val { width: 88px; flex: none; text-align: right; font-variant-numeric: tabular-nums;
+    color: var(--flame-ink); font-weight: 600; }
+  .axis { margin-top: 12px; color: var(--muted); font-size: 11px; }
+
+  footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted);
+    font-size: 12px; }
+  footer a { color: var(--flame-ink); }
+
+  /* ------- responsive: mobile 390px ------- */
+  @media (max-width: 720px) {
+    .app { padding: 16px 14px 48px; }
+    .xray { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 560px) {
+    .topbar { flex-direction: column; align-items: stretch; }
+    .controls { align-items: stretch; }         /* controls stack vertically */
+    .switch { justify-content: flex-start; }
+    .strip { grid-template-columns: repeat(2, 1fr); gap: 10px; }  /* 2 KPI tiles per row */
+    .tile-value { font-size: 22px; }
+    .math-grid { grid-template-columns: 1fr; }
+    .split { grid-template-columns: 1fr; }       /* driver/data cards stack */
+    .hero-num { font-size: 46px; }
+    .hero-headline { font-size: 23px; }
+    .bar-label { width: 96px; }
+    .bar-val { width: 64px; }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+ <div class="wrap">
+
+  <!-- topbar -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="flame-dot" aria-hidden="true"></span>
+      <div>
+        <div class="wordmark">pxpipe <span class="demo-note">interactive mockup · sample data</span></div>
+        <div class="tagline">See exactly what got turned into images to shrink your Claude&nbsp;Code bill.</div>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="switch">
+        <span class="switch-state on" id="compState"><span class="switch-dot"></span>Compression on</span>
+        <button class="btn" id="compBtn" type="button">Disable compression</button>
+        <span class="hint">kill switch · resets to on when you restart</span>
+      </div>
+      <button class="btn" id="themeBtn" type="button">◐ Theme</button>
+    </div>
+  </div>
+
+  <!-- model chips -->
+  <div class="models">
+    <span class="models-label">Image Claude models</span>
+    <button class="chip on" type="button">Fable 5 ✓</button>
+    <button class="chip" type="button">Opus 4.8</button>
+    <button class="chip" type="button">Opus 4.7</button>
+    <button class="chip" type="button">Sonnet 5</button>
+    <button class="chip" type="button">Sonnet 4.6</button>
+    <span class="hint">everything else is sent as normal text · runtime only · persist with PXPIPE_MODELS</span>
+  </div>
+
+  <!-- session hero -->
+  <div class="hero">
+    <div class="hero-eyebrow">Since start · 8 requests imaged</div>
+    <div class="hero-headline"><span class="hero-num">64%</span>fewer tokens after caching</div>
+    <div class="hero-sub"><b>30.6k</b> effective tokens vs <b>84.8k</b> if this same context stayed plain text —
+      both counted after normal cache discounts since this proxy started. Your latest messages and Claude's live
+      output are never compressed.</div>
+    <div class="hero-meta">Cache-aware — cached reads counted at their real ~0.1× weight, not full price · output untouched (2.6k) · no $ assumptions</div>
+  </div>
+
+  <!-- stat strip -->
+  <div class="strip">
+    <div class="tile">
+      <div class="tile-label">Requests</div>
+      <div class="tile-value">8</div>
+      <div class="tile-sub">6 turned into images</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Input tokens saved <span class="q" title="Tokens you did not pay for versus sending the same context as text">?</span></div>
+      <div class="tile-value pos">54,200</div>
+      <div class="tile-sub">vs sending the same context as text</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Estimated saved <span class="q" title="At $10 / M input tokens, Fable 5 list price">?</span></div>
+      <div class="tile-value pos">$0.42</div>
+      <div class="tile-sub">at $10/M input tokens</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Cost per request <span class="q" title="Average billed input cost per request this session">?</span></div>
+      <div class="tile-value">$0.09</div>
+      <div class="tile-sub">6 imaged · 2 passthrough</div>
+    </div>
+  </div>
+
+  <!-- math drawer -->
+  <details class="drawer">
+    <summary>Show the math &amp; honesty receipts</summary>
+    <div class="math-grid">
+      <div class="math-block">
+        <h4>Savings numerator (input only)</h4>
+        <div class="formula"><span class="k">text_if_uncompressed</span> <span class="op">=</span> <span class="v">84,800 tok</span>
+<span class="k">image_actually_billed</span> <span class="op">=</span> <span class="v">30,600 tok</span>
+<span class="k">saved</span> <span class="op">=</span> <span class="v">54,200 tok  (64%)</span><span class="src">output tokens identical on both sides → cancel out</span></div>
+      </div>
+      <div class="math-block">
+        <h4>Counterfactual, measured</h4>
+        <div class="formula"><span class="k">source</span> <span class="op">=</span> <span class="v">free count_tokens probe</span>
+<span class="k">on</span> <span class="op">=</span> <span class="v">the original uncompressed body</span>
+<span class="k">billed</span> <span class="op">=</span> <span class="v">Anthropic usage block</span><span class="src">both land in the same events.jsonl row — no run-to-run confound</span></div>
+      </div>
+    </div>
+  </details>
+
+  <div class="updated"><span class="live-dot" aria-hidden="true"></span> live · port 47821 · uptime 15s</div>
+
+  <!-- what happened -->
+  <div class="section">
+    <div class="section-head">What happened to your context <span class="section-sub">click a request to see image vs text</span></div>
+    <div class="xray">
+
+      <!-- recent requests -->
+      <div class="card">
+        <div class="card-head">Recent requests</div>
+        <div class="table-scroll">
+          <table class="rtable">
+            <thead>
+              <tr><th>#</th><th>Result</th><th>Endpoint</th><th>Model</th><th>Sent as</th>
+                  <th class="num">Cache hits</th><th class="num">As text</th><th class="num">Sent</th>
+                  <th class="num">Saved</th></tr>
+            </thead>
+            <tbody id="rrows"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- image vs text breakdown -->
+      <div class="card">
+        <div class="card-head">Image vs text breakdown</div>
+        <div class="ctx-headline">
+          <span class="ctx-title">Selected request</span>
+          <span class="ctx-big" id="selPct">64%</span> smaller —
+          cached text would bill as <b id="selText">8.0k</b> input tokens; images billed as <b id="selImg">2.9k</b>.
+        </div>
+        <div class="split">
+          <div class="split-col split-img">
+            <div class="split-head"><span class="badge badge-img" style="align-self:flex-start">Became an image</span>
+              <span class="split-sum" id="imgSum">9.3k chars · 1 page</span></div>
+            <div class="ctx-row"><span class="ctx-lbl">System prompt + tool docs</span><span class="ctx-val" id="imgChars">9.3k chars</span></div>
+            <div class="split-note">pxpipe can misread exact values inside images — treat these as gist, not byte-exact.</div>
+          </div>
+          <div class="split-col split-txt">
+            <div class="split-head"><span class="badge badge-txt" style="align-self:flex-start">Stayed as text</span>
+              <span class="split-sum">byte-exact</span></div>
+            <div class="ctx-row"><span class="ctx-lbl">Your latest messages</span><span class="ctx-val">verbatim</span></div>
+            <div class="ctx-row"><span class="ctx-lbl">Claude's reply (output)</span><span class="ctx-val" id="txtOut">402 tok</span></div>
+            <div class="split-note">never imaged — safe for IDs, hashes and exact numbers.</div>
+          </div>
+        </div>
+
+        <div class="card-head spaced">Image ↔ source inspector</div>
+        <div class="pages-title">1 image page sent to Claude — this is what the model reads:</div>
+        <div class="render" id="render" title="Click to compare against the source text"></div>
+        <div class="render-cap"><span id="renderDim">1568×280 · 10.7 KB · image 1/1</span> · <a class="row-view" id="srcToggle" href="#" role="button">show the text behind this image ▾</a></div>
+        <pre class="src-pane" id="srcPane" hidden></pre>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- top sessions -->
+  <div class="section">
+    <div class="section-head">Top sessions <span class="section-sub">by tokens saved</span></div>
+    <div class="card">
+      <div class="status">3 sessions tracked</div>
+      <div class="bars">
+        <div class="bar-row"><span class="bar-label">pxpipe/src</span><span class="bar-track"><span class="bar-fill" style="width:100%"></span></span><span class="bar-val">54,200</span></div>
+        <div class="bar-row"><span class="bar-label">notes/refactor</span><span class="bar-track"><span class="bar-fill" style="width:58%"></span></span><span class="bar-val">31,480</span></div>
+        <div class="bar-row"><span class="bar-label">api/handlers</span><span class="bar-track"><span class="bar-fill" style="width:22%"></span></span><span class="bar-val">11,900</span></div>
+      </div>
+      <div class="axis">tokens saved per session (cache-aware) · top 3 of 3</div>
+    </div>
+  </div>
+
+  <!-- full history -->
+  <div class="section">
+    <div class="section-head">Full history <span class="section-sub">every event on disk</span></div>
+    <div class="card">
+      <div class="status">8 events parsed from disk</div>
+      <div class="table-scroll">
+        <table class="dtable">
+          <tbody id="hrows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Interactive mockup of the pxpipe dashboard — the live proxy serves this same view at
+    <b>http://127.0.0.1:47821/</b> while it runs. Numbers here are sample data. Run it yourself with
+    <b>npx pxpipe-proxy</b>, or try the paste-in tool with <b>npx pxpipe-proxy gui</b>.
+  </footer>
+
+ </div>
+</div>
+
+<script>
+(function () {
+  var app = document.getElementById('app');
+
+  // ---- theme toggle (also responds to the artifact viewer's own toggle) ----
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    var root = document.documentElement;
+    var cur = root.getAttribute('data-theme');
+    if (!cur) {
+      cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+
+  // ---- kill switch ----
+  var compOn = true;
+  var compBtn = document.getElementById('compBtn');
+  var compState = document.getElementById('compState');
+  compBtn.addEventListener('click', function () {
+    compOn = !compOn;
+    app.classList.toggle('compress-off', !compOn);
+    compState.className = 'switch-state ' + (compOn ? 'on' : 'off');
+    compState.innerHTML = '<span class="switch-dot"></span>' + (compOn ? 'Compression on' : 'Compression off');
+    compBtn.textContent = compOn ? 'Disable compression' : 'Enable compression';
+  });
+
+  // ---- model chips ----
+  document.querySelectorAll('.chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      var on = chip.classList.toggle('on');
+      chip.textContent = chip.textContent.replace(' ✓', '') + (on ? ' ✓' : '');
+    });
+  });
+
+  // ---- request data (sample) ----
+  var reqs = [
+    { n:1, model:'claude-fable-5', ep:'messages', img:true,  cache:'15,100', asText:'6,240', sent:'1,796', saved:'+4,444', pct:71, imgChars:'9.3k chars', pages:'1 page', out:'402 tok', dim:'1568×280 · 10.7 KB · image 1/1' },
+    { n:2, model:'claude-fable-5', ep:'messages', img:true,  cache:'14,790', asText:'5,980', sent:'1,659', saved:'+4,321', pct:72, imgChars:'8.9k chars', pages:'1 page', out:'512 tok', dim:'1568×272 · 10.4 KB · image 1/1' },
+    { n:3, model:'claude-fable-5', ep:'messages', img:false, cache:'14,580', asText:'—',     sent:'1,200', saved:'—',      pct:0,  imgChars:'—',         pages:'0 pages', out:'128 tok', dim:'no image — sent as text (below the gate)' },
+    { n:4, model:'gpt-5.6',       ep:'completions', img:false, cache:'0',    asText:'—',     sent:'980',   saved:'—',      pct:0,  imgChars:'—',         pages:'0 pages', out:'466 tok', dim:'no image — sent as text (below the gate)' },
+    { n:5, model:'claude-fable-5', ep:'messages', img:true,  cache:'14,580', asText:'7,120', sent:'1,901', saved:'+5,219', pct:73, imgChars:'11.4k chars', pages:'1 page', out:'288 tok', dim:'1568×352 · 12.9 KB · image 1/1' },
+    { n:6, model:'claude-fable-5', ep:'messages', img:true,  cache:'14,790', asText:'5,410', sent:'1,638', saved:'+3,772', pct:70, imgChars:'8.1k chars', pages:'1 page', out:'601 tok', dim:'1568×256 · 9.8 KB · image 1/1' },
+    { n:7, model:'claude-fable-5', ep:'messages', img:true,  cache:'14,200', asText:'8,030', sent:'2,075', saved:'+5,955', pct:74, imgChars:'12.8k chars', pages:'1 page', out:'244 tok', dim:'1568×392 · 13.6 KB · image 1/1' },
+    { n:8, model:'claude-fable-5', ep:'messages', img:true,  cache:'0',      asText:'22,480',sent:'17,930',saved:'+4,550', pct:20, imgChars:'71.4k chars', pages:'4 pages', out:'355 tok', dim:'1568×728 · 41 KB · image 1/4' }
+  ];
+
+  // A dense chunk of "rendered" text to fill the fake image page.
+  var RENDER_SAMPLE = (
+    'You are Claude Code, an interactive CLI tool that helps users with software engineering tasks.\n' +
+    'Tool: Read(file_path) — read a file. Tool: Edit(file_path, old_string, new_string) — replace text.\n' +
+    'Tool: Bash(command) — run a shell command. Tool: Grep(pattern, path) — search file contents.\n'
+  ).repeat(60);
+
+  var tbody = document.getElementById('rrows');
+  reqs.forEach(function (r) {
+    var tr = document.createElement('tr');
+    tr.tabIndex = 0;
+    tr.setAttribute('role', 'button');
+    tr.innerHTML =
+      '<td>' + r.n + '</td>' +
+      '<td><span class="pill pill-good">200</span></td>' +
+      '<td>' + r.ep + '</td>' +
+      '<td class="endp">' + r.model + '</td>' +
+      '<td><span class="badge ' + (r.img ? 'badge-img">image' : 'badge-txt">text') + '</span></td>' +
+      '<td class="num">' + r.cache + '</td>' +
+      '<td class="num">' + r.asText + '</td>' +
+      '<td class="num">' + r.sent + '</td>' +
+      '<td class="num ' + (r.img ? 'pos' : '') + '">' + r.saved + '</td>';
+    tr.addEventListener('click', function (e) { e.preventDefault(); select(r, tr); });
+    tr.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(r, tr); }
+    });
+    tbody.appendChild(tr);
+  });
+
+  var selPct = document.getElementById('selPct'), selText = document.getElementById('selText'),
+      selImg = document.getElementById('selImg'), imgChars = document.getElementById('imgChars'),
+      imgSum = document.getElementById('imgSum'), txtOut = document.getElementById('txtOut'),
+      renderEl = document.getElementById('render'), renderDim = document.getElementById('renderDim'),
+      srcPane = document.getElementById('srcPane'), srcToggle = document.getElementById('srcToggle');
+
+  function fmtK(str) { return str; }
+  function select(r, tr) {
+    document.querySelectorAll('.rtable tbody tr').forEach(function (x) { x.classList.remove('sel'); });
+    tr.classList.add('sel');
+    selPct.textContent = r.pct > 0 ? r.pct + '%' : '0%';
+    selImg.textContent = r.sent + ' tok';
+    selText.textContent = r.asText === '—' ? '—' : r.asText + ' tok';
+    imgChars.textContent = r.imgChars;
+    imgSum.textContent = r.imgChars + ' · ' + r.pages;
+    txtOut.textContent = r.out;
+    renderDim.textContent = r.dim;
+    if (r.img) {
+      renderEl.style.display = '';
+      renderEl.textContent = RENDER_SAMPLE;
+    } else {
+      renderEl.style.display = 'none';
+    }
+    srcPane.hidden = true;
+    srcToggle.textContent = 'show the text behind this image ▾';
+  }
+
+  srcToggle.addEventListener('click', function (e) {
+    e.preventDefault();
+    var showing = !srcPane.hidden;
+    srcPane.hidden = showing;
+    srcPane.textContent = RENDER_SAMPLE;
+    srcToggle.textContent = showing ? 'show the text behind this image ▾' : 'hide the text ▴';
+  });
+
+  // ---- full history ----
+  var hist = [
+    ['requests', '8'], ['2xx / 4xx / 5xx', '8 / 0 / 0'], ['compressed', '6'], ['passthrough', '2'],
+    ['input tokens', '30,600'], ['cache create', '15,065'], ['cache read', '103,140'],
+    ['cache hit (by tokens)', '86.2%'], ['original chars', '74,280'], ['image bytes', '473,686'],
+    ['bytes / char', '6.4×'], ['latency p50 / p95', '34 / 359 ms'], ['first-byte p50 / p95', '33 / 357 ms']
+  ];
+  var hbody = document.getElementById('hrows');
+  hist.forEach(function (row) {
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + row[0] + '</td><td class="num">' + row[1] + '</td>';
+    hbody.appendChild(tr);
+  });
+
+  // preselect request #1
+  select(reqs[0], tbody.children[0]);
+})();
+</script>
+</body>
+</html>
